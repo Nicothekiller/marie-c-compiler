@@ -1,1 +1,133 @@
-translation_unit = { SOI ~ ANY* ~ EOI }
+translation_unit = { SOI ~ external_declaration* ~ EOI }
+
+external_declaration = { function_definition | declaration }
+
+function_definition = {
+    declaration_specifiers
+    ~ declarator
+    ~ compound_statement
+}
+
+declaration = { declaration_specifiers ~ init_declarator_list? ~ ";" }
+
+declaration_specifiers = { type_specifier+ }
+
+type_specifier = { kw_void | kw_char | kw_int }
+
+init_declarator_list = { init_declarator ~ ("," ~ init_declarator)* }
+init_declarator = { declarator ~ ("=" ~ assignment_expression)? }
+
+declarator = { pointer? ~ direct_declarator }
+pointer = @{ "*"+ }
+
+direct_declarator = {
+    ident
+    ~ declarator_suffix*
+}
+
+declarator_suffix = {
+    array_suffix
+    | function_suffix
+}
+
+array_suffix = { "[" ~ assignment_expression? ~ "]" }
+function_suffix = { "(" ~ parameter_list? ~ ")" }
+
+parameter_list = { parameter_declaration ~ ("," ~ parameter_declaration)* }
+parameter_declaration = { declaration_specifiers ~ declarator? }
+
+compound_statement = { "{" ~ block_item* ~ "}" }
+block_item = { declaration | statement }
+
+statement = {
+    compound_statement
+    | selection_statement
+    | jump_statement
+    | expression_statement
+}
+
+expression_statement = { expression? ~ ";" }
+
+selection_statement = {
+    kw_if ~ "(" ~ expression ~ ")" ~ statement ~ (kw_else ~ statement)?
+}
+
+jump_statement = {
+    kw_return ~ expression? ~ ";"
+}
+
+expression = { assignment_expression ~ ("," ~ assignment_expression)* }
+
+assignment_expression = {
+    unary_expression ~ "=" ~ assignment_expression
+    | logical_or_expression
+}
+
+logical_or_expression = { logical_and_expression ~ (op_or ~ logical_and_expression)* }
+logical_and_expression = { equality_expression ~ (op_and ~ equality_expression)* }
+
+equality_expression = { relational_expression ~ ((op_eq | op_ne) ~ relational_expression)* }
+relational_expression = { additive_expression ~ ((op_le | op_ge | "<" | ">") ~ additive_expression)* }
+
+additive_expression = { multiplicative_expression ~ (("+" | "-") ~ multiplicative_expression)* }
+multiplicative_expression = { unary_expression ~ (("*" | "%") ~ unary_expression)* }
+
+unary_expression = {
+    unary_operator ~ unary_expression
+    | postfix_expression
+}
+
+unary_operator = { "&" | "*" | "+" | "-" | "!" }
+
+postfix_expression = {
+    primary_expression
+    ~ postfix_suffix*
+}
+
+postfix_suffix = {
+    "[" ~ expression ~ "]"
+    | "(" ~ argument_expression_list? ~ ")"
+}
+
+argument_expression_list = { assignment_expression ~ ("," ~ assignment_expression)* }
+
+primary_expression = {
+    ident
+    | int_constant
+    | "(" ~ expression ~ ")"
+}
+
+kw_if = @{ "if" ~ !id_continue }
+kw_else = @{ "else" ~ !id_continue }
+kw_return = @{ "return" ~ !id_continue }
+kw_void = @{ "void" ~ !id_continue }
+kw_char = @{ "char" ~ !id_continue }
+kw_int = @{ "int" ~ !id_continue }
+
+op_or = { "||" }
+op_and = { "&&" }
+op_eq = { "==" }
+op_ne = { "!=" }
+op_le = { "<=" }
+op_ge = { ">=" }
+
+int_constant = @{ ASCII_DIGIT+ }
+ident = @{ !keyword ~ id_start ~ id_continue* }
+
+keyword = {
+    kw_if
+    | kw_else
+    | kw_return
+    | kw_void
+    | kw_char
+    | kw_int
+}
+
+id_start = _{ ASCII_ALPHA | "_" }
+id_continue = _{ ASCII_ALPHANUMERIC | "_" }
+
+WHITESPACE = _{ " " | "\t" | NEWLINE }
+COMMENT = _{
+    "//" ~ (!NEWLINE ~ ANY)*
+    | "/*" ~ (!"*/" ~ ANY)* ~ "*/"
+}
