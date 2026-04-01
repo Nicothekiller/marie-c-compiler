@@ -157,3 +157,72 @@ pub enum BinaryOp {
     LogicalAnd,
     LogicalOr,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn translation_unit_starts_empty() {
+        let unit = TranslationUnit::default();
+        assert!(unit.top_level_items.is_empty());
+    }
+
+    #[test]
+    fn builds_function_definition_shape() {
+        let function = FunctionDeclaration {
+            name: "main".to_string(),
+            return_type: Type::Builtin(BuiltinType::Int),
+            params: vec![Parameter {
+                name: Some("argc".to_string()),
+                ty: Type::Builtin(BuiltinType::Int),
+            }],
+            body: Some(Block {
+                items: vec![BlockItem::Statement(Statement::Return(Some(
+                    Expression::IntegerLiteral(0),
+                )))],
+            }),
+        };
+
+        let unit = TranslationUnit {
+            top_level_items: vec![ExternalDeclaration::Function(function.clone())],
+        };
+
+        assert_eq!(unit.top_level_items.len(), 1);
+        let ExternalDeclaration::Function(found) = &unit.top_level_items[0] else {
+            panic!("expected function external declaration");
+        };
+
+        assert_eq!(found.name, "main");
+        assert_eq!(found.return_type, Type::Builtin(BuiltinType::Int));
+        assert_eq!(found.params.len(), 1);
+        assert!(found.body.is_some());
+    }
+
+    #[test]
+    fn supports_pointer_and_array_types() {
+        let pointer = Type::Pointer(Box::new(Type::Builtin(BuiltinType::Char)));
+        let array = Type::Array {
+            element: Box::new(Type::Builtin(BuiltinType::Int)),
+            size: Some(ConstExpr { value: 16 }),
+        };
+
+        assert!(matches!(pointer, Type::Pointer(_)));
+        assert!(matches!(array, Type::Array { .. }));
+    }
+
+    #[test]
+    fn builds_binary_expression_node() {
+        let expr = Expression::Binary {
+            op: BinaryOp::Add,
+            lhs: Box::new(Expression::Identifier("a".to_string())),
+            rhs: Box::new(Expression::Identifier("b".to_string())),
+        };
+
+        let Expression::Binary { op, .. } = expr else {
+            panic!("expected binary expression");
+        };
+
+        assert_eq!(op, BinaryOp::Add);
+    }
+}
