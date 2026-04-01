@@ -1254,4 +1254,9 @@ mod tests {
         assert_parse_fails("int main(void) { if (1 return 0; }");
         assert_parse_fails("int main(void) { if 1) return 0; }");
     }
+
+    #[test]
+    fn rejects_missing_dot_comma_or_whatheveritsnameisimtired() {
+        assert_parse_fails("int main(void) { return 1 }");
+    }
 }
