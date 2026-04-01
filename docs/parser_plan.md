@@ -81,6 +81,7 @@ This subset is intentionally small so we can move quickly from parse-only to AST
 
 ### Parser/grammar scope
 - Preserve all v0 constructs.
+- Add `while (expr) statement` as a supported v1 iteration statement.
 - Recognize unsupported operators/tokens so we can emit precise errors:
   - `/`, `<<`, `>>`, binary `&`, `|`, `^`, compound assignments for unsupported ops.
 - Recognize `static` and reject it explicitly with a dedicated diagnostic.
@@ -112,7 +113,7 @@ This subset is intentionally small so we can move quickly from parse-only to AST
 ### Non-goals for v1
 - Full C type system.
 - Optimizations.
-- Full control-flow feature parity with C.
+- Full control-flow feature parity with C (only `while` is added beyond v0 control flow).
 
 ## v2 specification
 

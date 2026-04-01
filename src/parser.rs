@@ -828,6 +828,12 @@ mod tests {
             .expect("source should parse")
     }
 
+    /// Asserts that source text fails parsing for unsupported or invalid grammar.
+    fn assert_parse_fails(source: &str) {
+        let result = CParser::new().parse_translation_unit(source);
+        assert!(result.is_err(), "expected parse failure for: {source}");
+    }
+
     /// Verifies lowering of an empty translation unit.
     #[test]
     fn lowers_empty_translation_unit() {
@@ -1014,5 +1020,238 @@ mod tests {
 
         assert_eq!(args.len(), 2);
         assert!(matches!(args[0], Expression::Index { .. }));
+    }
+
+    /// Verifies lowering of a function prototype without body.
+    #[test]
+    fn lowers_function_prototype_as_function_item() {
+        let unit = parse_unit("int sum(int a, int b);");
+        assert_eq!(unit.top_level_items.len(), 1);
+
+        let ExternalDeclaration::GlobalDeclaration(declaration) = &unit.top_level_items[0] else {
+            panic!("expected declaration external declaration");
+        };
+
+        assert_eq!(declaration.declarators.len(), 1);
+        assert_eq!(declaration.declarators[0].name, "sum");
+        assert!(matches!(
+            declaration.declarators[0].ty,
+            Type::Function { .. }
+        ));
+    }
+
+    /// Verifies multiple declarators in a single declaration statement.
+    #[test]
+    fn lowers_multiple_declarators_in_one_declaration() {
+        let unit = parse_unit("int a, b, c;");
+
+        let ExternalDeclaration::GlobalDeclaration(declaration) = &unit.top_level_items[0] else {
+            panic!("expected declaration external declaration");
+        };
+
+        assert_eq!(declaration.declarators.len(), 3);
+        assert_eq!(declaration.declarators[0].name, "a");
+        assert_eq!(declaration.declarators[1].name, "b");
+        assert_eq!(declaration.declarators[2].name, "c");
+    }
+
+    /// Verifies nested block statements are preserved in AST.
+    #[test]
+    fn lowers_nested_block_statement() {
+        let unit = parse_unit("int main(void) { { return 1; } }");
+
+        let ExternalDeclaration::Function(function) = &unit.top_level_items[0] else {
+            panic!("expected function declaration");
+        };
+        let body = function.body.as_ref().expect("function body should exist");
+
+        let BlockItem::Statement(Statement::Block(inner_block)) = &body.items[0] else {
+            panic!("expected inner block statement");
+        };
+
+        assert_eq!(inner_block.items.len(), 1);
+        assert!(matches!(
+            inner_block.items[0],
+            BlockItem::Statement(Statement::Return(_))
+        ));
+    }
+
+    /// Verifies `else if` lowers as an `else` branch containing another `if`.
+    #[test]
+    fn lowers_else_if_chain_shape() {
+        let unit =
+            parse_unit("int main(void) { if (a) return 1; else if (b) return 2; else return 3; }");
+
+        let ExternalDeclaration::Function(function) = &unit.top_level_items[0] else {
+            panic!("expected function declaration");
+        };
+        let body = function.body.as_ref().expect("function body should exist");
+
+        let BlockItem::Statement(Statement::If { else_branch, .. }) = &body.items[0] else {
+            panic!("expected top-level if statement");
+        };
+
+        let Some(else_statement) = else_branch else {
+            panic!("expected else branch");
+        };
+
+        assert!(matches!(**else_statement, Statement::If { .. }));
+    }
+
+    /// Verifies assignment is right-associative (`a = (b = 1)`).
+    #[test]
+    fn lowers_right_associative_assignment() {
+        let unit = parse_unit("int main(void) { a = b = 1; }");
+
+        let ExternalDeclaration::Function(function) = &unit.top_level_items[0] else {
+            panic!("expected function declaration");
+        };
+        let body = function.body.as_ref().expect("function body should exist");
+
+        let BlockItem::Statement(Statement::Expression(Some(Expression::Assignment {
+            value, ..
+        }))) = &body.items[0]
+        else {
+            panic!("expected outer assignment");
+        };
+
+        assert!(matches!(**value, Expression::Assignment { .. }));
+    }
+
+    /// Verifies relational/equality operator precedence (`<` before `==`).
+    #[test]
+    fn lowers_relational_before_equality() {
+        let unit = parse_unit("int main(void) { return a < b == c; }");
+
+        let ExternalDeclaration::Function(function) = &unit.top_level_items[0] else {
+            panic!("expected function declaration");
+        };
+        let body = function.body.as_ref().expect("function body should exist");
+
+        let BlockItem::Statement(Statement::Return(Some(Expression::Binary { op, lhs, .. }))) =
+            &body.items[0]
+        else {
+            panic!("expected binary return expression");
+        };
+
+        assert_eq!(*op, BinaryOp::Equal);
+        assert!(matches!(
+            **lhs,
+            Expression::Binary {
+                op: BinaryOp::Less,
+                ..
+            }
+        ));
+    }
+
+    /// Verifies logical-and has higher precedence than logical-or.
+    #[test]
+    fn lowers_logical_and_before_or() {
+        let unit = parse_unit("int main(void) { return a || b && c; }");
+
+        let ExternalDeclaration::Function(function) = &unit.top_level_items[0] else {
+            panic!("expected function declaration");
+        };
+        let body = function.body.as_ref().expect("function body should exist");
+
+        let BlockItem::Statement(Statement::Return(Some(Expression::Binary { op, rhs, .. }))) =
+            &body.items[0]
+        else {
+            panic!("expected binary return expression");
+        };
+
+        assert_eq!(*op, BinaryOp::LogicalOr);
+        assert!(matches!(
+            **rhs,
+            Expression::Binary {
+                op: BinaryOp::LogicalAnd,
+                ..
+            }
+        ));
+    }
+
+    /// Verifies declaration initializers are lowered as assignment expressions.
+    #[test]
+    fn lowers_declaration_initializer_expression() {
+        let unit = parse_unit("int x = 5 + 7;");
+
+        let ExternalDeclaration::GlobalDeclaration(declaration) = &unit.top_level_items[0] else {
+            panic!("expected declaration external declaration");
+        };
+
+        let Some(initializer) = &declaration.declarators[0].initializer else {
+            panic!("expected initializer");
+        };
+
+        assert!(matches!(
+            initializer,
+            Expression::Binary {
+                op: BinaryOp::Add,
+                ..
+            }
+        ));
+    }
+
+    /// Verifies empty statements inside a block lower correctly.
+    #[test]
+    fn lowers_empty_expression_statement() {
+        let unit = parse_unit("int main(void) { ; return 0; }");
+
+        let ExternalDeclaration::Function(function) = &unit.top_level_items[0] else {
+            panic!("expected function declaration");
+        };
+        let body = function.body.as_ref().expect("function body should exist");
+
+        let BlockItem::Statement(Statement::Expression(None)) = &body.items[0] else {
+            panic!("expected empty expression statement");
+        };
+    }
+
+    /// Verifies division operator is rejected by current grammar.
+    #[test]
+    fn rejects_division_operator() {
+        assert_parse_fails("int main(void) { return 10 / 2; }");
+    }
+
+    /// Verifies bitwise operators are rejected by current grammar.
+    #[test]
+    fn rejects_bitwise_operators() {
+        assert_parse_fails("int main(void) { return a & b; }");
+        assert_parse_fails("int main(void) { return a | b; }");
+        assert_parse_fails("int main(void) { return a ^ b; }");
+    }
+
+    /// Verifies shift operators are rejected by current grammar.
+    #[test]
+    fn rejects_shift_operators() {
+        assert_parse_fails("int main(void) { return a << 2; }");
+        assert_parse_fails("int main(void) { return a >> 2; }");
+    }
+
+    /// Verifies loop statements outside v0 remain rejected.
+    #[test]
+    fn rejects_non_v0_loop_statements() {
+        assert_parse_fails("int main(void) { while (1) return 0; }");
+        assert_parse_fails("int main(void) { for (;;) return 0; }");
+    }
+
+    /// Verifies `static` storage class is not accepted in v0 grammar.
+    #[test]
+    fn rejects_static_storage_class() {
+        assert_parse_fails("static int counter;");
+    }
+
+    /// Verifies malformed declarations fail parsing.
+    #[test]
+    fn rejects_malformed_declarations() {
+        assert_parse_fails("int x[;");
+        assert_parse_fails("int main(void) { int x = ; }");
+    }
+
+    /// Verifies malformed control-flow syntax fails parsing.
+    #[test]
+    fn rejects_malformed_if_syntax() {
+        assert_parse_fails("int main(void) { if (1 return 0; }");
+        assert_parse_fails("int main(void) { if 1) return 0; }");
     }
 }
