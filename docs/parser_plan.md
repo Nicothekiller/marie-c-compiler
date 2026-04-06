@@ -8,6 +8,7 @@ This subset is intentionally small so we can move quickly from parse-only to AST
 ## Input assumptions
 - Input has already gone through the C preprocessor.
 - We parse plain C source text after preprocessing.
+- Semantic rules reference: `docs/semantic_rules.md`.
 
 ## v0 language scope
 
@@ -20,7 +21,6 @@ This subset is intentionally small so we can move quickly from parse-only to AST
 - Global variable declarations
 - Local variable declarations
 - Function definitions
-- Function prototypes
 - Pointer declarators (e.g. `int *p;`)
 - Fixed-size array declarators (e.g. `int a[10];`)
 
@@ -61,6 +61,7 @@ This subset is intentionally small so we can move quickly from parse-only to AST
 - `goto` and labels
 - `static` storage class
 - `typedef`, `enum`, `union`
+- Function prototypes
 - Initializer lists (`{...}`) for arrays/structs
 - String literals and character literals (for now)
 - Cast expressions `(type)expr` (for now)

@@ -10,7 +10,7 @@ pub struct TranslationUnit {
 pub enum ExternalDeclaration {
     /// Global variable declaration.
     GlobalDeclaration(Declaration),
-    /// Function declaration or definition.
+    /// Function definition.
     Function(FunctionDeclaration),
 }
 
@@ -68,13 +68,13 @@ pub struct Declaration {
     pub declarators: Vec<Declarator>,
 }
 
-/// Function declaration or full definition.
+/// Function definition node.
 #[derive(Debug, Clone)]
 pub struct FunctionDeclaration {
     pub name: String,
     pub return_type: Type,
     pub params: Vec<Parameter>,
-    pub body: Option<Block>,
+    pub body: Block,
 }
 
 /// Compound statement block with declarations/statements in source order.
@@ -106,27 +106,45 @@ pub enum Statement {
 /// Expression forms for the reduced C subset.
 #[derive(Debug, Clone)]
 pub enum Expression {
+    /// Reference to a declared symbol by name.
     Identifier(String),
+    /// Integer literal constant.
     IntegerLiteral(i64),
+    /// Unary expression with one operand.
     Unary {
+        /// Unary operator applied to the operand.
         op: UnaryOp,
+        /// Operand expression.
         expr: Box<Expression>,
     },
+    /// Binary expression with left and right operands.
     Binary {
+        /// Binary operator joining both operands.
         op: BinaryOp,
+        /// Left-hand side operand.
         lhs: Box<Expression>,
+        /// Right-hand side operand.
         rhs: Box<Expression>,
     },
+    /// Assignment expression (`target = value`).
     Assignment {
+        /// Assignment target expression.
         target: Box<Expression>,
+        /// Value expression assigned into `target`.
         value: Box<Expression>,
     },
+    /// Function call expression (`callee(args...)`).
     Call {
+        /// Function expression being invoked.
         callee: Box<Expression>,
+        /// Call argument expressions in source order.
         args: Vec<Expression>,
     },
+    /// Index expression (`base[index]`).
     Index {
+        /// Base pointer/array expression.
         base: Box<Expression>,
+        /// Index expression applied to `base`.
         index: Box<Expression>,
     },
 }
@@ -177,11 +195,11 @@ mod tests {
                 name: Some("argc".to_string()),
                 ty: Type::Builtin(BuiltinType::Int),
             }],
-            body: Some(Block {
+            body: Block {
                 items: vec![BlockItem::Statement(Statement::Return(Some(
                     Expression::IntegerLiteral(0),
                 )))],
-            }),
+            },
         };
 
         let unit = TranslationUnit {
@@ -196,7 +214,7 @@ mod tests {
         assert_eq!(found.name, "main");
         assert_eq!(found.return_type, Type::Builtin(BuiltinType::Int));
         assert_eq!(found.params.len(), 1);
-        assert!(found.body.is_some());
+        assert_eq!(found.body.items.len(), 1);
     }
 
     #[test]

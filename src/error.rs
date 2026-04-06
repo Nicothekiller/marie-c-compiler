@@ -4,6 +4,7 @@ use std::fmt::{Display, Formatter};
 pub enum CompilerError {
     Io(std::io::Error),
     Parse(String),
+    Semantic(String),
 }
 
 impl Display for CompilerError {
@@ -12,6 +13,7 @@ impl Display for CompilerError {
         match self {
             Self::Io(error) => write!(f, "io error: {error}"),
             Self::Parse(error) => write!(f, "parse error: {error}"),
+            Self::Semantic(error) => write!(f, "semantic error: {error}"),
         }
     }
 }

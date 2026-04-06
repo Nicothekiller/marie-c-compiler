@@ -108,7 +108,7 @@ fn parse_function_definition(
         name,
         return_type,
         params,
-        body: Some(body),
+        body,
     })
 }
 
@@ -131,11 +131,13 @@ fn parse_declaration(source: &str, pair: Pair<'_, Rule>) -> Result<Declaration, 
             if declarator_pair.as_rule() != Rule::init_declarator {
                 continue;
             }
-            declarators.push(parse_init_declarator(
-                source,
-                declarator_pair,
-                base_type.clone(),
-            )?);
+            let declarator = parse_init_declarator(source, declarator_pair, base_type.clone())?;
+            if matches!(declarator.ty, Type::Function { .. }) {
+                return Err(CompilerError::Parse(
+                    "function prototypes are not supported".to_string(),
+                ));
+            }
+            declarators.push(declarator);
         }
     }
 
@@ -313,6 +315,7 @@ fn parse_parameter_list(
 
         let parameter = if let Some(declarator_pair) = inner.next() {
             let (name, ty) = parse_declarator(source, declarator_pair, base_type)?;
+
             Parameter {
                 name: Some(name),
                 ty,
@@ -357,7 +360,6 @@ fn parse_compound_statement(source: &str, pair: Pair<'_, Rule>) -> Result<Block,
     Ok(Block { items })
 }
 
-/// Lowers a generic statement rule into a specific `Statement` variant.
 /// Lowers a generic statement rule into a specific `Statement` variant.
 fn parse_statement(source: &str, pair: Pair<'_, Rule>) -> Result<Statement, CompilerError> {
     let Some(inner) = pair.into_inner().next() else {
@@ -584,7 +586,6 @@ fn parse_unary_expression(source: &str, pair: Pair<'_, Rule>) -> Result<Expressi
 }
 
 /// Maps unary operator token text to `UnaryOp`.
-/// Maps unary operator token text to `UnaryOp`.
 fn parse_unary_operator(pair: Pair<'_, Rule>) -> Result<UnaryOp, CompilerError> {
     match pair.as_str() {
         "&" => Ok(UnaryOp::AddressOf),
@@ -617,37 +618,37 @@ fn parse_postfix_expression(
             continue;
         }
 
-        let Some(actual_suffix) = suffix.into_inner().next() else {
-            continue;
-        };
+        let suffix_text = suffix.as_str();
+        let mut suffix_inner = suffix.into_inner();
 
-        match actual_suffix.as_rule() {
-            Rule::expression => {
-                let index = parse_expression(source, actual_suffix)?;
-                expr = Expression::Index {
-                    base: Box::new(expr),
-                    index: Box::new(index),
-                };
-            }
-            Rule::argument_expression_list => {
-                let mut args = Vec::new();
-                for item in actual_suffix.into_inner() {
-                    if item.as_rule() == Rule::assignment_expression {
-                        args.push(parse_assignment_expression(source, item)?);
-                    }
+        if suffix_text.starts_with('[') {
+            let Some(index_pair) = suffix_inner.next() else {
+                return Err(CompilerError::Parse(
+                    "index suffix missing expression".to_string(),
+                ));
+            };
+
+            let index = parse_expression(source, index_pair)?;
+            expr = Expression::Index {
+                base: Box::new(expr),
+                index: Box::new(index),
+            };
+            continue;
+        }
+
+        let mut args = Vec::new();
+        if let Some(argument_list_pair) = suffix_inner.next() {
+            for item in argument_list_pair.into_inner() {
+                if item.as_rule() == Rule::assignment_expression {
+                    args.push(parse_assignment_expression(source, item)?);
                 }
-                expr = Expression::Call {
-                    callee: Box::new(expr),
-                    args,
-                };
-            }
-            _ => {
-                expr = Expression::Call {
-                    callee: Box::new(expr),
-                    args: Vec::new(),
-                };
             }
         }
+
+        expr = Expression::Call {
+            callee: Box::new(expr),
+            args,
+        };
     }
 
     Ok(expr)
@@ -678,7 +679,6 @@ fn parse_primary_expression(
     }
 }
 
-/// Folds left-associative binary expressions for a precedence level.
 /// Folds left-associative binary expressions for a precedence level.
 fn fold_binary_by_rule(
     source: &str,
@@ -731,7 +731,6 @@ fn parse_expression_by_rule(
     }
 }
 
-/// Returns the trimmed source text between two parsed spans.
 /// Returns the trimmed source text between two parsed spans.
 fn between_trimmed(source: &str, left: Pair<'_, Rule>, right: Pair<'_, Rule>) -> String {
     let left_end = left.as_span().end();
@@ -859,7 +858,7 @@ mod tests {
             Type::Builtin(BuiltinType::Void)
         ));
 
-        let body = function.body.as_ref().expect("function body should exist");
+        let body = &function.body;
         assert_eq!(body.items.len(), 1);
 
         let BlockItem::Statement(Statement::Return(Some(Expression::IntegerLiteral(value)))) =
@@ -913,7 +912,7 @@ mod tests {
         let ExternalDeclaration::Function(function) = &unit.top_level_items[0] else {
             panic!("expected function declaration");
         };
-        let body = function.body.as_ref().expect("function body should exist");
+        let body = &function.body;
 
         let BlockItem::Statement(Statement::If {
             condition,
@@ -941,7 +940,7 @@ mod tests {
         let ExternalDeclaration::Function(function) = &unit.top_level_items[0] else {
             panic!("expected function declaration");
         };
-        let body = function.body.as_ref().expect("function body should exist");
+        let body = &function.body;
 
         let BlockItem::Statement(Statement::Return(Some(Expression::Binary { op, rhs, .. }))) =
             &body.items[0]
@@ -967,7 +966,7 @@ mod tests {
         let ExternalDeclaration::Function(function) = &unit.top_level_items[0] else {
             panic!("expected function declaration");
         };
-        let body = function.body.as_ref().expect("function body should exist");
+        let body = &function.body;
 
         let BlockItem::Statement(Statement::Return(Some(Expression::Unary { op, expr }))) =
             &body.items[0]
@@ -993,7 +992,7 @@ mod tests {
         let ExternalDeclaration::Function(function) = &unit.top_level_items[0] else {
             panic!("expected function declaration");
         };
-        let body = function.body.as_ref().expect("function body should exist");
+        let body = &function.body;
 
         let BlockItem::Statement(Statement::Expression(Some(Expression::Assignment { .. }))) =
             &body.items[0]
@@ -1010,7 +1009,7 @@ mod tests {
         let ExternalDeclaration::Function(function) = &unit.top_level_items[0] else {
             panic!("expected function declaration");
         };
-        let body = function.body.as_ref().expect("function body should exist");
+        let body = &function.body;
 
         let BlockItem::Statement(Statement::Return(Some(Expression::Call { args, .. }))) =
             &body.items[0]
@@ -1022,22 +1021,10 @@ mod tests {
         assert!(matches!(args[0], Expression::Index { .. }));
     }
 
-    /// Verifies lowering of a function prototype without body.
+    /// Verifies function prototype syntax is rejected by parser.
     #[test]
-    fn lowers_function_prototype_as_function_item() {
-        let unit = parse_unit("int sum(int a, int b);");
-        assert_eq!(unit.top_level_items.len(), 1);
-
-        let ExternalDeclaration::GlobalDeclaration(declaration) = &unit.top_level_items[0] else {
-            panic!("expected declaration external declaration");
-        };
-
-        assert_eq!(declaration.declarators.len(), 1);
-        assert_eq!(declaration.declarators[0].name, "sum");
-        assert!(matches!(
-            declaration.declarators[0].ty,
-            Type::Function { .. }
-        ));
+    fn rejects_function_prototype_syntax() {
+        assert_parse_fails("int sum(int a, int b);");
     }
 
     /// Verifies multiple declarators in a single declaration statement.
@@ -1063,7 +1050,7 @@ mod tests {
         let ExternalDeclaration::Function(function) = &unit.top_level_items[0] else {
             panic!("expected function declaration");
         };
-        let body = function.body.as_ref().expect("function body should exist");
+        let body = &function.body;
 
         let BlockItem::Statement(Statement::Block(inner_block)) = &body.items[0] else {
             panic!("expected inner block statement");
@@ -1085,7 +1072,7 @@ mod tests {
         let ExternalDeclaration::Function(function) = &unit.top_level_items[0] else {
             panic!("expected function declaration");
         };
-        let body = function.body.as_ref().expect("function body should exist");
+        let body = &function.body;
 
         let BlockItem::Statement(Statement::If { else_branch, .. }) = &body.items[0] else {
             panic!("expected top-level if statement");
@@ -1106,7 +1093,7 @@ mod tests {
         let ExternalDeclaration::Function(function) = &unit.top_level_items[0] else {
             panic!("expected function declaration");
         };
-        let body = function.body.as_ref().expect("function body should exist");
+        let body = &function.body;
 
         let BlockItem::Statement(Statement::Expression(Some(Expression::Assignment {
             value, ..
@@ -1126,7 +1113,7 @@ mod tests {
         let ExternalDeclaration::Function(function) = &unit.top_level_items[0] else {
             panic!("expected function declaration");
         };
-        let body = function.body.as_ref().expect("function body should exist");
+        let body = &function.body;
 
         let BlockItem::Statement(Statement::Return(Some(Expression::Binary { op, lhs, .. }))) =
             &body.items[0]
@@ -1152,7 +1139,7 @@ mod tests {
         let ExternalDeclaration::Function(function) = &unit.top_level_items[0] else {
             panic!("expected function declaration");
         };
-        let body = function.body.as_ref().expect("function body should exist");
+        let body = &function.body;
 
         let BlockItem::Statement(Statement::Return(Some(Expression::Binary { op, rhs, .. }))) =
             &body.items[0]
@@ -1200,7 +1187,7 @@ mod tests {
         let ExternalDeclaration::Function(function) = &unit.top_level_items[0] else {
             panic!("expected function declaration");
         };
-        let body = function.body.as_ref().expect("function body should exist");
+        let body = &function.body;
 
         let BlockItem::Statement(Statement::Expression(None)) = &body.items[0] else {
             panic!("expected empty expression statement");
@@ -1255,8 +1242,16 @@ mod tests {
         assert_parse_fails("int main(void) { if 1) return 0; }");
     }
 
+    /// Verifies `void`-only parameter list remains accepted.
     #[test]
-    fn rejects_missing_dot_comma_or_whatheveritsnameisimtired() {
+    fn accepts_void_parameter_marker() {
+        let unit = parse_unit("int main(void) { return 0; }");
+        assert_eq!(unit.top_level_items.len(), 1);
+    }
+
+    /// Verifies missing semicolon is rejected.
+    #[test]
+    fn rejects_missing_semicolon_after_return() {
         assert_parse_fails("int main(void) { return 1 }");
     }
 }
