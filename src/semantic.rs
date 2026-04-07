@@ -129,6 +129,20 @@ impl SemanticAnalyzer {
                             )));
                         }
 
+                        if let Some(initializer) = &declarator.initializer {
+                            let global_context = FunctionContext {
+                                scopes: vec![],
+                                return_type: Type::Builtin(BuiltinType::Void),
+                            };
+                            let init_info = analyze_expression(&global_context, initializer, info)?;
+                            if !types_compatible(&declarator.ty, &init_info.ty) {
+                                return Err(CompilerError::Semantic(
+                                    "initializer type is incompatible with declaration type"
+                                        .to_string(),
+                                ));
+                            }
+                        }
+
                         info.global_symbols
                             .insert(declarator.name.clone(), declarator.ty.clone());
                     }
@@ -199,7 +213,13 @@ fn analyze_block(
                 for declarator in &declaration.declarators {
                     declare_in_current_scope(context, &declarator.name, &declarator.ty)?;
                     if let Some(initializer) = &declarator.initializer {
-                        analyze_expression(context, initializer, info)?;
+                        let init_info = analyze_expression(context, initializer, info)?;
+                        if !types_compatible(&declarator.ty, &init_info.ty) {
+                            return Err(CompilerError::Semantic(
+                                "initializer type is incompatible with declaration type"
+                                    .to_string(),
+                            ));
+                        }
                     }
                 }
             }
@@ -236,10 +256,15 @@ fn analyze_statement(
         }
         crate::ast::Statement::Return(expression) => {
             if let Some(expr) = expression {
-                analyze_expression(context, expr, info)?;
+                let return_info = analyze_expression(context, expr, info)?;
                 if context.return_type == Type::Builtin(BuiltinType::Void) {
                     return Err(CompilerError::Semantic(
                         "cant return a value on a void function.".to_string(),
+                    ));
+                }
+                if !types_compatible(&context.return_type, &return_info.ty) {
+                    return Err(CompilerError::Semantic(
+                        "return type is incompatible with function signature".to_string(),
                     ));
                 }
             } else if context.return_type != Type::Builtin(BuiltinType::Void) {
@@ -258,39 +283,165 @@ fn analyze_statement(
     }
 }
 
-/// Analyzes an expression recursively for name, call, and lvalue validity.
+/// Type and lvalue metadata for analyzed expressions.
+struct ExprInfo {
+    ty: Type,
+    is_lvalue: bool,
+}
+
+/// Analyzes an expression recursively and returns semantic metadata.
 fn analyze_expression(
     context: &FunctionContext,
     expression: &Expression,
     info: &SemanticInfo,
-) -> Result<(), CompilerError> {
+) -> Result<ExprInfo, CompilerError> {
     match expression {
         Expression::Identifier(name) => {
-            if !symbol_exists(context, info, name) {
-                return Err(CompilerError::Semantic(format!(
-                    "undeclared identifier '{}'",
-                    name
-                )));
+            if let Some(ty) = lookup_variable_type(context, info, name) {
+                return Ok(ExprInfo {
+                    ty,
+                    is_lvalue: true,
+                });
             }
-            Ok(())
+
+            if let Some(signature) = info.function_signatures.get(name) {
+                return Ok(ExprInfo {
+                    ty: Type::Function {
+                        return_type: Box::new(signature.return_type.clone()),
+                        params: vec![],
+                    },
+                    is_lvalue: false,
+                });
+            }
+
+            Err(CompilerError::Semantic(format!(
+                "undeclared identifier '{}'",
+                name
+            )))
         }
-        Expression::IntegerLiteral(_) => Ok(()),
-        Expression::Unary { expr, .. } => analyze_expression(context, expr, info),
-        Expression::Binary { lhs, rhs, .. } => {
-            analyze_expression(context, lhs, info)?;
-            analyze_expression(context, rhs, info)
+        Expression::IntegerLiteral(_) => Ok(ExprInfo {
+            ty: Type::Builtin(BuiltinType::Int),
+            is_lvalue: false,
+        }),
+        Expression::Unary { op, expr } => {
+            let inner = analyze_expression(context, expr, info)?;
+            match op {
+                UnaryOp::AddressOf => {
+                    if !inner.is_lvalue {
+                        return Err(CompilerError::Semantic(
+                            "address-of requires an lvalue operand".to_string(),
+                        ));
+                    }
+                    Ok(ExprInfo {
+                        ty: Type::Pointer(Box::new(inner.ty)),
+                        is_lvalue: false,
+                    })
+                }
+                UnaryOp::Dereference => match inner.ty {
+                    Type::Pointer(pointee) => Ok(ExprInfo {
+                        ty: *pointee,
+                        is_lvalue: true,
+                    }),
+                    _ => Err(CompilerError::Semantic(
+                        "dereference requires a pointer operand".to_string(),
+                    )),
+                },
+                UnaryOp::Plus | UnaryOp::Minus => {
+                    if !is_integer_like(&inner.ty) {
+                        return Err(CompilerError::Semantic(
+                            "unary arithmetic requires integer-like operand".to_string(),
+                        ));
+                    }
+                    Ok(ExprInfo {
+                        ty: inner.ty,
+                        is_lvalue: false,
+                    })
+                }
+                UnaryOp::LogicalNot => Ok(ExprInfo {
+                    ty: Type::Builtin(BuiltinType::Int),
+                    is_lvalue: false,
+                }),
+            }
+        }
+        Expression::Binary { op, lhs, rhs } => {
+            let left = analyze_expression(context, lhs, info)?;
+            let right = analyze_expression(context, rhs, info)?;
+            use crate::ast::BinaryOp;
+            match op {
+                BinaryOp::Multiply | BinaryOp::Modulo | BinaryOp::Add | BinaryOp::Subtract => {
+                    if !is_integer_like(&left.ty)
+                        || !is_integer_like(&right.ty)
+                        || left.ty != right.ty
+                    {
+                        return Err(CompilerError::Semantic(
+                            "arithmetic operators require matching integer-like operands"
+                                .to_string(),
+                        ));
+                    }
+                    Ok(ExprInfo {
+                        ty: left.ty,
+                        is_lvalue: false,
+                    })
+                }
+                BinaryOp::Less
+                | BinaryOp::LessEqual
+                | BinaryOp::Greater
+                | BinaryOp::GreaterEqual => {
+                    if !is_integer_like(&left.ty)
+                        || !is_integer_like(&right.ty)
+                        || left.ty != right.ty
+                    {
+                        return Err(CompilerError::Semantic(
+                            "relational operators require matching integer-like operands"
+                                .to_string(),
+                        ));
+                    }
+                    Ok(ExprInfo {
+                        ty: Type::Builtin(BuiltinType::Int),
+                        is_lvalue: false,
+                    })
+                }
+                BinaryOp::Equal | BinaryOp::NotEqual => {
+                    if !types_compatible(&left.ty, &right.ty) {
+                        return Err(CompilerError::Semantic(
+                            "equality operators require compatible operand types".to_string(),
+                        ));
+                    }
+                    Ok(ExprInfo {
+                        ty: Type::Builtin(BuiltinType::Int),
+                        is_lvalue: false,
+                    })
+                }
+                BinaryOp::LogicalAnd | BinaryOp::LogicalOr => {
+                    if !is_scalar_like(&left.ty) || !is_scalar_like(&right.ty) {
+                        return Err(CompilerError::Semantic(
+                            "logical operators require scalar-like operands".to_string(),
+                        ));
+                    }
+                    Ok(ExprInfo {
+                        ty: Type::Builtin(BuiltinType::Int),
+                        is_lvalue: false,
+                    })
+                }
+            }
         }
         Expression::Assignment { target, value } => {
-            analyze_expression(context, target, info)?;
-            analyze_expression(context, value, info)?;
-
-            if !is_lvalue(target) {
+            let left = analyze_expression(context, target, info)?;
+            let right = analyze_expression(context, value, info)?;
+            if !left.is_lvalue || !is_lvalue(target) {
                 return Err(CompilerError::Semantic(
                     "assignment target is not an lvalue".to_string(),
                 ));
             }
-
-            Ok(())
+            if !types_compatible(&left.ty, &right.ty) {
+                return Err(CompilerError::Semantic(
+                    "assignment types are incompatible".to_string(),
+                ));
+            }
+            Ok(ExprInfo {
+                ty: left.ty,
+                is_lvalue: false,
+            })
         }
         Expression::Call { callee, args } => {
             let function_name = match &**callee {
@@ -301,7 +452,6 @@ fn analyze_expression(
                     ));
                 }
             };
-
             if symbol_exists_in_local_scopes(context, function_name)
                 && !info.function_signatures.contains_key(function_name)
             {
@@ -310,14 +460,12 @@ fn analyze_expression(
                     function_name
                 )));
             }
-
             let Some(signature) = info.function_signatures.get(function_name) else {
                 return Err(CompilerError::Semantic(format!(
                     "call to undeclared function '{}'",
                     function_name
                 )));
             };
-
             if signature.parameter_types.len() != args.len() {
                 return Err(CompilerError::Semantic(format!(
                     "function '{}' expects {} arguments but got {}",
@@ -326,16 +474,41 @@ fn analyze_expression(
                     args.len()
                 )));
             }
-
-            for argument in args {
-                analyze_expression(context, argument, info)?;
+            for (argument, expected_type) in args.iter().zip(signature.parameter_types.iter()) {
+                let argument_info = analyze_expression(context, argument, info)?;
+                if !types_compatible(&argument_info.ty, expected_type) {
+                    return Err(CompilerError::Semantic(format!(
+                        "argument type mismatch in call to '{}'",
+                        function_name
+                    )));
+                }
             }
-
-            Ok(())
+            Ok(ExprInfo {
+                ty: signature.return_type.clone(),
+                is_lvalue: false,
+            })
         }
         Expression::Index { base, index } => {
-            analyze_expression(context, base, info)?;
-            analyze_expression(context, index, info)
+            let base_info = analyze_expression(context, base, info)?;
+            let index_info = analyze_expression(context, index, info)?;
+            if !is_integer_like(&index_info.ty) {
+                return Err(CompilerError::Semantic(
+                    "index expression must be integer-like".to_string(),
+                ));
+            }
+            match base_info.ty {
+                Type::Array { element, .. } => Ok(ExprInfo {
+                    ty: *element,
+                    is_lvalue: true,
+                }),
+                Type::Pointer(element) => Ok(ExprInfo {
+                    ty: *element,
+                    is_lvalue: true,
+                }),
+                _ => Err(CompilerError::Semantic(
+                    "index base must be array or pointer".to_string(),
+                )),
+            }
         }
     }
 }
@@ -386,23 +559,50 @@ fn symbol_exists_in_local_scopes(context: &FunctionContext, name: &str) -> bool 
 }
 
 /// Returns whether a symbol name resolves in local scope or top-level symbols.
-fn symbol_exists(context: &FunctionContext, info: &SemanticInfo, name: &str) -> bool {
-    symbol_exists_in_local_scopes(context, name)
-        || info.global_symbols.contains_key(name)
-        || info.function_signatures.contains_key(name)
+/// Looks up a non-function symbol type in local/global scopes.
+fn lookup_variable_type(
+    context: &FunctionContext,
+    info: &SemanticInfo,
+    name: &str,
+) -> Option<Type> {
+    for scope in context.scopes.iter().rev() {
+        if let Some(ty) = scope.get(name) {
+            return Some(ty.clone());
+        }
+    }
+
+    info.global_symbols.get(name).cloned()
+}
+
+/// Returns whether a type is integer-like in the current subset.
+fn is_integer_like(ty: &Type) -> bool {
+    matches!(
+        ty,
+        Type::Builtin(BuiltinType::Int) | Type::Builtin(BuiltinType::Char)
+    )
+}
+
+/// Returns whether a type is scalar-like in the current subset.
+fn is_scalar_like(ty: &Type) -> bool {
+    is_integer_like(ty) || matches!(ty, Type::Pointer(_))
+}
+
+/// Returns whether two types are compatible under strict no-conversion rules.
+fn types_compatible(left: &Type, right: &Type) -> bool {
+    left == right
 }
 
 /// Returns whether an expression is assignable as an lvalue in current subset.
 fn is_lvalue(expression: &Expression) -> bool {
-    match expression {
-        Expression::Identifier(_) => true,
-        Expression::Index { .. } => true,
-        Expression::Unary {
-            op: UnaryOp::Dereference,
-            ..
-        } => true,
-        _ => false,
-    }
+    matches!(
+        expression,
+        Expression::Identifier(_)
+            | Expression::Index { .. }
+            | Expression::Unary {
+                op: UnaryOp::Dereference,
+                ..
+            }
+    )
 }
 
 #[cfg(test)]
@@ -806,5 +1006,90 @@ mod tests {
             result.is_ok(),
             "same-type integer assignment should remain valid"
         );
+    }
+
+    /// Verifies duplicate global symbol detection with a different type pair.
+    #[test]
+    fn rejects_duplicate_global_symbols_with_different_types() {
+        assert_semantic_fails("char dup; int dup;");
+    }
+
+    /// Verifies duplicate function definitions are rejected for non-void returns.
+    #[test]
+    fn rejects_duplicate_function_definitions_second_case() {
+        assert_semantic_fails("int f(void) { return 0; } int f(void) { return 1; }");
+    }
+
+    /// Verifies duplicate parameter names are rejected in a void-returning function.
+    #[test]
+    fn rejects_duplicate_parameter_names_second_case() {
+        assert_semantic_fails("void f(int a, int a) { return; }");
+    }
+
+    /// Verifies duplicate local names are rejected in nested statement blocks.
+    #[test]
+    fn rejects_duplicate_local_names_second_case() {
+        assert_semantic_fails("int main(void) { int a; { int b; int b; } return a; }");
+    }
+
+    /// Verifies undeclared identifier detection inside arithmetic return.
+    #[test]
+    fn rejects_undeclared_identifier_in_binary_expression() {
+        assert_semantic_fails("int main(void) { int a; return a + missing; }");
+    }
+
+    /// Verifies function call arity checks for excessive arguments.
+    #[test]
+    fn rejects_call_with_too_many_arguments() {
+        assert_semantic_fails("int f(int a) { return a; } int main(void) { return f(1, 2); }");
+    }
+
+    /// Verifies assignment compatibility rejects pointer-to-char from pointer-to-int.
+    #[test]
+    fn rejects_pointer_assignment_between_different_pointee_types() {
+        assert_semantic_fails("int main(void) { int *ip; char *cp; cp = ip; return 0; }");
+    }
+
+    /// Verifies unary plus rejects pointer operands.
+    #[test]
+    fn rejects_unary_plus_on_pointer() {
+        assert_semantic_fails("int main(void) { int *p; return +p; }");
+    }
+
+    /// Verifies logical operators reject non-scalar function operands.
+    #[test]
+    fn rejects_logical_or_with_function_symbol() {
+        assert_semantic_fails("int f(void) { return 0; } int main(void) { return f || 1; }");
+    }
+
+    /// Verifies indexing supports pointer bases with integer index.
+    #[test]
+    fn accepts_pointer_indexing_expression() {
+        let result = analyze_source("int main(void) { int *p; return p[0]; }");
+        assert!(result.is_ok(), "pointer indexing should be accepted");
+    }
+
+    /// Verifies global initializer type compatibility for matching integer types.
+    #[test]
+    fn accepts_global_initializer_matching_type() {
+        let result = analyze_source("int x = 1; int main(void) { return x; }");
+        assert!(
+            result.is_ok(),
+            "matching global initializer should be accepted"
+        );
+    }
+
+    /// Verifies return type compatibility for pointer-returning function.
+    #[test]
+    fn accepts_return_matching_pointer_type() {
+        let result = analyze_source("int *f(int *p) { return p; } int main(void) { return 0; }");
+        assert!(result.is_ok(), "matching pointer return should be accepted");
+    }
+
+    /// Verifies void marker parameter still accepted with explicit void return.
+    #[test]
+    fn accepts_void_marker_parameter_second_case() {
+        let result = analyze_source("void noop(void) { return; } int main(void) { return 0; }");
+        assert!(result.is_ok(), "void marker parameter should be accepted");
     }
 }
