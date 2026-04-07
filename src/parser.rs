@@ -6,7 +6,12 @@ use crate::ast::{
     BinaryOp, Block, BlockItem, BuiltinType, ConstExpr, Declaration, Declarator, Expression,
     ExternalDeclaration, FunctionDeclaration, Parameter, Statement, TranslationUnit, Type, UnaryOp,
 };
-use crate::error::CompilerError;
+use crate::error::{CompilerError, SourceLocation};
+
+fn pair_location(pair: &Pair<'_, Rule>) -> SourceLocation {
+    let (line, column) = pair.as_span().start_pos().line_col();
+    SourceLocation { line, column }
+}
 
 #[derive(Parser)]
 #[grammar = "parser/grammar.pest"]
@@ -23,8 +28,17 @@ impl CParser {
 
     /// Parses a preprocessed C translation unit and returns its AST representation.
     pub fn parse_translation_unit(&self, source: &str) -> Result<TranslationUnit, CompilerError> {
-        let mut pairs = PestGeneratedParser::parse(Rule::translation_unit, source)
-            .map_err(|error| CompilerError::Parse(error.to_string()))?;
+        let mut pairs =
+            PestGeneratedParser::parse(Rule::translation_unit, source).map_err(|error| {
+                let (line, column) = match error.line_col {
+                    pest::error::LineColLocation::Pos((line, column)) => (line, column),
+                    pest::error::LineColLocation::Span((line, column), _) => (line, column),
+                };
+                CompilerError::parse_at(
+                    error.to_string(),
+                    crate::error::SourceLocation { line, column },
+                )
+            })?;
 
         let Some(translation_unit_pair) = pairs.next() else {
             return Ok(TranslationUnit::default());
@@ -60,7 +74,7 @@ fn parse_external_declaration(
             let declaration = parse_declaration(source, inner)?;
             Ok(vec![ExternalDeclaration::GlobalDeclaration(declaration)])
         }
-        _ => Err(CompilerError::Parse(
+        _ => Err(CompilerError::parse(
             "unexpected external declaration".to_string(),
         )),
     }
@@ -74,14 +88,14 @@ fn parse_function_definition(
     let mut inner = pair.into_inner();
 
     let Some(specifier_pair) = inner.next() else {
-        return Err(CompilerError::Parse(
+        return Err(CompilerError::parse(
             "missing function type specifier".to_string(),
         ));
     };
     let return_type = parse_declaration_specifiers(specifier_pair)?;
 
     let Some(declarator_pair) = inner.next() else {
-        return Err(CompilerError::Parse(
+        return Err(CompilerError::parse(
             "missing function declarator".to_string(),
         ));
     };
@@ -93,14 +107,14 @@ fn parse_function_definition(
             params,
         } => (*return_type, params),
         _ => {
-            return Err(CompilerError::Parse(
+            return Err(CompilerError::parse(
                 "function definition must use function declarator".to_string(),
             ));
         }
     };
 
     let Some(body_pair) = inner.next() else {
-        return Err(CompilerError::Parse("missing function body".to_string()));
+        return Err(CompilerError::parse("missing function body".to_string()));
     };
     let body = parse_compound_statement(source, body_pair)?;
 
@@ -133,7 +147,7 @@ fn parse_declaration(source: &str, pair: Pair<'_, Rule>) -> Result<Declaration, 
             }
             let declarator = parse_init_declarator(source, declarator_pair, base_type.clone())?;
             if matches!(declarator.ty, Type::Function { .. }) {
-                return Err(CompilerError::Parse(
+                return Err(CompilerError::parse(
                     "function prototypes are not supported".to_string(),
                 ));
             }
@@ -152,13 +166,13 @@ fn parse_declaration_specifiers(pair: Pair<'_, Rule>) -> Result<Type, CompilerEr
         }
     }
 
-    Err(CompilerError::Parse("missing type specifier".to_string()))
+    Err(CompilerError::parse("missing type specifier".to_string()))
 }
 
 /// Maps a parsed type-specifier rule to an AST `Type`.
 fn parse_type_specifier(pair: Pair<'_, Rule>) -> Result<Type, CompilerError> {
     let Some(inner) = pair.into_inner().next() else {
-        return Err(CompilerError::Parse("invalid type specifier".to_string()));
+        return Err(CompilerError::parse("invalid type specifier".to_string()));
     };
 
     let ty = match inner.as_rule() {
@@ -166,7 +180,7 @@ fn parse_type_specifier(pair: Pair<'_, Rule>) -> Result<Type, CompilerError> {
         Rule::kw_char => BuiltinType::Char,
         Rule::kw_void => BuiltinType::Void,
         _ => {
-            return Err(CompilerError::Parse(
+            return Err(CompilerError::parse(
                 "unsupported type specifier".to_string(),
             ));
         }
@@ -184,7 +198,7 @@ fn parse_init_declarator(
     let mut inner = pair.into_inner();
 
     let Some(declarator_pair) = inner.next() else {
-        return Err(CompilerError::Parse("missing declarator".to_string()));
+        return Err(CompilerError::parse("missing declarator".to_string()));
     };
     let (name, ty) = parse_declarator(source, declarator_pair, base_type)?;
 
@@ -228,7 +242,7 @@ fn parse_declarator(
     }
 
     let Some(direct) = direct_declarator_pair else {
-        return Err(CompilerError::Parse(
+        return Err(CompilerError::parse(
             "missing direct declarator".to_string(),
         ));
     };
@@ -245,7 +259,7 @@ fn parse_direct_declarator(
     let mut inner = pair.into_inner();
 
     let Some(ident_pair) = inner.next() else {
-        return Err(CompilerError::Parse("missing identifier".to_string()));
+        return Err(CompilerError::parse("missing identifier".to_string()));
     };
     let name = ident_pair.as_str().to_string();
 
@@ -267,7 +281,7 @@ fn parse_direct_declarator(
                     .transpose()?;
 
                 let const_size = size.and_then(|expr| match expr {
-                    Expression::IntegerLiteral(value) => Some(ConstExpr { value }),
+                    Expression::IntegerLiteral { value, .. } => Some(ConstExpr { value }),
                     _ => None,
                 });
 
@@ -309,7 +323,7 @@ fn parse_parameter_list(
         let mut inner = item.into_inner();
 
         let Some(specifier_pair) = inner.next() else {
-            return Err(CompilerError::Parse("missing parameter type".to_string()));
+            return Err(CompilerError::parse("missing parameter type".to_string()));
         };
         let base_type = parse_declaration_specifiers(specifier_pair)?;
 
@@ -363,7 +377,7 @@ fn parse_compound_statement(source: &str, pair: Pair<'_, Rule>) -> Result<Block,
 /// Lowers a generic statement rule into a specific `Statement` variant.
 fn parse_statement(source: &str, pair: Pair<'_, Rule>) -> Result<Statement, CompilerError> {
     let Some(inner) = pair.into_inner().next() else {
-        return Err(CompilerError::Parse("empty statement node".to_string()));
+        return Err(CompilerError::parse("empty statement node".to_string()));
     };
 
     match inner.as_rule() {
@@ -371,7 +385,7 @@ fn parse_statement(source: &str, pair: Pair<'_, Rule>) -> Result<Statement, Comp
         Rule::selection_statement => parse_selection_statement(source, inner),
         Rule::jump_statement => parse_jump_statement(source, inner),
         Rule::expression_statement => parse_expression_statement(source, inner),
-        _ => Err(CompilerError::Parse("unsupported statement".to_string())),
+        _ => Err(CompilerError::parse("unsupported statement".to_string())),
     }
 }
 
@@ -383,14 +397,14 @@ fn parse_selection_statement(
 
     let condition_pair = inner
         .find(|item| item.as_rule() == Rule::expression)
-        .ok_or_else(|| CompilerError::Parse("if statement missing condition".to_string()))?;
+        .ok_or_else(|| CompilerError::parse("if statement missing condition".to_string()))?;
     let condition = parse_expression(source, condition_pair)?;
 
     let statements: Vec<Pair<'_, Rule>> = inner
         .filter(|item| item.as_rule() == Rule::statement)
         .collect();
     if statements.is_empty() {
-        return Err(CompilerError::Parse(
+        return Err(CompilerError::parse(
             "if statement missing branches".to_string(),
         ));
     }
@@ -445,7 +459,7 @@ fn parse_expression(source: &str, pair: Pair<'_, Rule>) -> Result<Expression, Co
 
     expressions
         .pop()
-        .ok_or_else(|| CompilerError::Parse("empty expression".to_string()))
+        .ok_or_else(|| CompilerError::parse("empty expression".to_string()))
 }
 
 /// Lowers an assignment-expression, handling right-associative assignment.
@@ -453,6 +467,7 @@ fn parse_assignment_expression(
     source: &str,
     pair: Pair<'_, Rule>,
 ) -> Result<Expression, CompilerError> {
+    let assignment_location = pair_location(&pair);
     let inner: Vec<Pair<'_, Rule>> = pair.into_inner().collect();
 
     if inner.len() == 2
@@ -464,6 +479,7 @@ fn parse_assignment_expression(
         return Ok(Expression::Assignment {
             target: Box::new(target),
             value: Box::new(value),
+            location: Some(assignment_location),
         });
     }
 
@@ -471,7 +487,7 @@ fn parse_assignment_expression(
         .into_iter()
         .find(|item| item.as_rule() == Rule::logical_or_expression)
     else {
-        return Err(CompilerError::Parse(
+        return Err(CompilerError::parse(
             "assignment expression missing logical_or_expression".to_string(),
         ));
     };
@@ -559,6 +575,7 @@ fn parse_multiplicative_expression(
 
 /// Lowers a unary expression.
 fn parse_unary_expression(source: &str, pair: Pair<'_, Rule>) -> Result<Expression, CompilerError> {
+    let unary_location = pair_location(&pair);
     let inner: Vec<Pair<'_, Rule>> = pair.into_inner().collect();
 
     if inner.len() == 2
@@ -570,6 +587,7 @@ fn parse_unary_expression(source: &str, pair: Pair<'_, Rule>) -> Result<Expressi
         return Ok(Expression::Unary {
             op,
             expr: Box::new(expr),
+            location: Some(unary_location),
         });
     }
 
@@ -577,7 +595,7 @@ fn parse_unary_expression(source: &str, pair: Pair<'_, Rule>) -> Result<Expressi
         .into_iter()
         .find(|item| item.as_rule() == Rule::postfix_expression)
     else {
-        return Err(CompilerError::Parse(
+        return Err(CompilerError::parse(
             "unary expression missing postfix expression".to_string(),
         ));
     };
@@ -593,7 +611,7 @@ fn parse_unary_operator(pair: Pair<'_, Rule>) -> Result<UnaryOp, CompilerError> 
         "+" => Ok(UnaryOp::Plus),
         "-" => Ok(UnaryOp::Minus),
         "!" => Ok(UnaryOp::LogicalNot),
-        _ => Err(CompilerError::Parse(
+        _ => Err(CompilerError::parse(
             "unsupported unary operator".to_string(),
         )),
     }
@@ -606,7 +624,7 @@ fn parse_postfix_expression(
     let mut inner = pair.into_inner();
 
     let Some(primary_pair) = inner.next() else {
-        return Err(CompilerError::Parse(
+        return Err(CompilerError::parse(
             "postfix expression missing primary expression".to_string(),
         ));
     };
@@ -618,12 +636,13 @@ fn parse_postfix_expression(
             continue;
         }
 
+        let suffix_location = pair_location(&suffix);
         let suffix_text = suffix.as_str();
         let mut suffix_inner = suffix.into_inner();
 
         if suffix_text.starts_with('[') {
             let Some(index_pair) = suffix_inner.next() else {
-                return Err(CompilerError::Parse(
+                return Err(CompilerError::parse(
                     "index suffix missing expression".to_string(),
                 ));
             };
@@ -632,6 +651,7 @@ fn parse_postfix_expression(
             expr = Expression::Index {
                 base: Box::new(expr),
                 index: Box::new(index),
+                location: Some(suffix_location),
             };
             continue;
         }
@@ -648,6 +668,7 @@ fn parse_postfix_expression(
         expr = Expression::Call {
             callee: Box::new(expr),
             args,
+            location: Some(suffix_location),
         };
     }
 
@@ -660,20 +681,26 @@ fn parse_primary_expression(
     pair: Pair<'_, Rule>,
 ) -> Result<Expression, CompilerError> {
     let Some(inner) = pair.into_inner().next() else {
-        return Err(CompilerError::Parse("empty primary expression".to_string()));
+        return Err(CompilerError::parse("empty primary expression".to_string()));
     };
 
     match inner.as_rule() {
-        Rule::ident => Ok(Expression::Identifier(inner.as_str().to_string())),
+        Rule::ident => Ok(Expression::Identifier {
+            name: inner.as_str().to_string(),
+            location: Some(pair_location(&inner)),
+        }),
         Rule::int_constant => {
             let value = inner
                 .as_str()
                 .parse::<i64>()
-                .map_err(|error| CompilerError::Parse(error.to_string()))?;
-            Ok(Expression::IntegerLiteral(value))
+                .map_err(|error| CompilerError::parse(error.to_string()))?;
+            Ok(Expression::IntegerLiteral {
+                value,
+                location: Some(pair_location(&inner)),
+            })
         }
         Rule::expression => parse_expression(source, inner),
-        _ => Err(CompilerError::Parse(
+        _ => Err(CompilerError::parse(
             "unsupported primary expression".to_string(),
         )),
     }
@@ -693,11 +720,12 @@ fn fold_binary_by_rule(
         .collect();
 
     if children.is_empty() {
-        return Err(CompilerError::Parse(
+        return Err(CompilerError::parse(
             "expected binary child expression".to_string(),
         ));
     }
 
+    let binary_location = pair_location(&pair);
     let mut expression = parse_expression_by_rule(source, children[0].clone())?;
     for index in 1..children.len() {
         let op_text = between_trimmed(source, children[index - 1].clone(), children[index].clone());
@@ -707,6 +735,7 @@ fn fold_binary_by_rule(
             op,
             lhs: Box::new(expression),
             rhs: Box::new(rhs),
+            location: Some(binary_location),
         };
     }
 
@@ -725,7 +754,7 @@ fn parse_expression_by_rule(
         Rule::additive_expression => parse_additive_expression(source, pair),
         Rule::multiplicative_expression => parse_multiplicative_expression(source, pair),
         Rule::unary_expression => parse_unary_expression(source, pair),
-        _ => Err(CompilerError::Parse(
+        _ => Err(CompilerError::parse(
             "unsupported expression rule".to_string(),
         )),
     }
@@ -743,7 +772,7 @@ fn map_logical_or_operator(text: &str) -> Result<BinaryOp, CompilerError> {
     if text.contains("||") {
         Ok(BinaryOp::LogicalOr)
     } else {
-        Err(CompilerError::Parse("expected || operator".to_string()))
+        Err(CompilerError::parse("expected || operator".to_string()))
     }
 }
 
@@ -752,7 +781,7 @@ fn map_logical_and_operator(text: &str) -> Result<BinaryOp, CompilerError> {
     if text.contains("&&") {
         Ok(BinaryOp::LogicalAnd)
     } else {
-        Err(CompilerError::Parse("expected && operator".to_string()))
+        Err(CompilerError::parse("expected && operator".to_string()))
     }
 }
 
@@ -763,7 +792,7 @@ fn map_equality_operator(text: &str) -> Result<BinaryOp, CompilerError> {
     } else if text.contains("!=") {
         Ok(BinaryOp::NotEqual)
     } else {
-        Err(CompilerError::Parse(
+        Err(CompilerError::parse(
             "expected equality operator".to_string(),
         ))
     }
@@ -780,7 +809,7 @@ fn map_relational_operator(text: &str) -> Result<BinaryOp, CompilerError> {
     } else if text.contains('>') {
         Ok(BinaryOp::Greater)
     } else {
-        Err(CompilerError::Parse(
+        Err(CompilerError::parse(
             "expected relational operator".to_string(),
         ))
     }
@@ -793,7 +822,7 @@ fn map_additive_operator(text: &str) -> Result<BinaryOp, CompilerError> {
     } else if text.contains('-') {
         Ok(BinaryOp::Subtract)
     } else {
-        Err(CompilerError::Parse(
+        Err(CompilerError::parse(
             "expected additive operator".to_string(),
         ))
     }
@@ -806,7 +835,7 @@ fn map_multiplicative_operator(text: &str) -> Result<BinaryOp, CompilerError> {
     } else if text.contains('%') {
         Ok(BinaryOp::Modulo)
     } else {
-        Err(CompilerError::Parse(
+        Err(CompilerError::parse(
             "expected multiplicative operator".to_string(),
         ))
     }
@@ -861,8 +890,9 @@ mod tests {
         let body = &function.body;
         assert_eq!(body.items.len(), 1);
 
-        let BlockItem::Statement(Statement::Return(Some(Expression::IntegerLiteral(value)))) =
-            &body.items[0]
+        let BlockItem::Statement(Statement::Return(Some(Expression::IntegerLiteral {
+            value, ..
+        }))) = &body.items[0]
         else {
             panic!("expected return integer literal statement");
         };
@@ -923,7 +953,10 @@ mod tests {
             panic!("expected if statement");
         };
 
-        assert!(matches!(condition, Expression::IntegerLiteral(1)));
+        assert!(matches!(
+            condition,
+            Expression::IntegerLiteral { value: 1, .. }
+        ));
         assert!(matches!(**then_branch, Statement::Return(_)));
         assert!(else_branch.is_some());
         assert!(matches!(
@@ -968,7 +1001,7 @@ mod tests {
         };
         let body = &function.body;
 
-        let BlockItem::Statement(Statement::Return(Some(Expression::Unary { op, expr }))) =
+        let BlockItem::Statement(Statement::Return(Some(Expression::Unary { op, expr, .. }))) =
             &body.items[0]
         else {
             panic!("expected unary expression in return");

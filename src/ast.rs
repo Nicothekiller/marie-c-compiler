@@ -107,15 +107,22 @@ pub enum Statement {
 #[derive(Debug, Clone)]
 pub enum Expression {
     /// Reference to a declared symbol by name.
-    Identifier(String),
+    Identifier {
+        name: String,
+        location: Option<crate::error::SourceLocation>,
+    },
     /// Integer literal constant.
-    IntegerLiteral(i64),
+    IntegerLiteral {
+        value: i64,
+        location: Option<crate::error::SourceLocation>,
+    },
     /// Unary expression with one operand.
     Unary {
         /// Unary operator applied to the operand.
         op: UnaryOp,
         /// Operand expression.
         expr: Box<Expression>,
+        location: Option<crate::error::SourceLocation>,
     },
     /// Binary expression with left and right operands.
     Binary {
@@ -125,6 +132,7 @@ pub enum Expression {
         lhs: Box<Expression>,
         /// Right-hand side operand.
         rhs: Box<Expression>,
+        location: Option<crate::error::SourceLocation>,
     },
     /// Assignment expression (`target = value`).
     Assignment {
@@ -132,6 +140,7 @@ pub enum Expression {
         target: Box<Expression>,
         /// Value expression assigned into `target`.
         value: Box<Expression>,
+        location: Option<crate::error::SourceLocation>,
     },
     /// Function call expression (`callee(args...)`).
     Call {
@@ -139,6 +148,7 @@ pub enum Expression {
         callee: Box<Expression>,
         /// Call argument expressions in source order.
         args: Vec<Expression>,
+        location: Option<crate::error::SourceLocation>,
     },
     /// Index expression (`base[index]`).
     Index {
@@ -146,7 +156,23 @@ pub enum Expression {
         base: Box<Expression>,
         /// Index expression applied to `base`.
         index: Box<Expression>,
+        location: Option<crate::error::SourceLocation>,
     },
+}
+
+impl Expression {
+    /// Returns source location associated with the expression, when available.
+    pub fn location(&self) -> Option<crate::error::SourceLocation> {
+        match self {
+            Self::Identifier { location, .. }
+            | Self::IntegerLiteral { location, .. }
+            | Self::Unary { location, .. }
+            | Self::Binary { location, .. }
+            | Self::Assignment { location, .. }
+            | Self::Call { location, .. }
+            | Self::Index { location, .. } => *location,
+        }
+    }
 }
 
 /// Unary operators supported by the parser subset.
@@ -197,7 +223,10 @@ mod tests {
             }],
             body: Block {
                 items: vec![BlockItem::Statement(Statement::Return(Some(
-                    Expression::IntegerLiteral(0),
+                    Expression::IntegerLiteral {
+                        value: 0,
+                        location: None,
+                    },
                 )))],
             },
         };
@@ -233,8 +262,15 @@ mod tests {
     fn builds_binary_expression_node() {
         let expr = Expression::Binary {
             op: BinaryOp::Add,
-            lhs: Box::new(Expression::Identifier("a".to_string())),
-            rhs: Box::new(Expression::Identifier("b".to_string())),
+            lhs: Box::new(Expression::Identifier {
+                name: "a".to_string(),
+                location: None,
+            }),
+            rhs: Box::new(Expression::Identifier {
+                name: "b".to_string(),
+                location: None,
+            }),
+            location: None,
         };
 
         let Expression::Binary { op, .. } = expr else {
