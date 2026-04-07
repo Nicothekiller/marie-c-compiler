@@ -2,7 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use clap::Parser;
-use marie_c_compiler::compiler::Compiler;
+use marie_c_compiler::compiler::DefaultCompiler;
 
 #[derive(Parser, Debug)]
 #[command(name = "marie-c-compiler")]
@@ -32,7 +32,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|| default_output_path(&cli.input));
 
     let source = fs::read_to_string(&cli.input)?;
-    let compiler = Compiler::new();
+    let compiler = DefaultCompiler::new();
     let marie_asm = compiler.compile_source(&source)?;
 
     fs::write(&output_path, marie_asm)?;

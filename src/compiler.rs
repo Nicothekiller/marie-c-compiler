@@ -1,27 +1,31 @@
-use crate::codegen::MarieCodegen;
+use crate::codegen::{Codegen, MarieCodegen};
 use crate::error::CompilerError;
 use crate::parser::CParser;
 use crate::semantic::{SemanticAnalyzer, SemanticInfo};
 
-pub struct Compiler {
+pub struct Compiler<C: Codegen> {
     parser: CParser,
     semantic: SemanticAnalyzer,
+    codegen: C,
 }
 
-impl Compiler {
-    /// Creates a new compiler pipeline instance.
-    pub fn new() -> Self {
+pub type DefaultCompiler = Compiler<MarieCodegen>;
+
+impl<C: Codegen> Compiler<C> {
+    /// Creates a compiler pipeline instance with an explicit backend.
+    pub fn new_with_codegen(codegen: C) -> Self {
         Self {
             parser: CParser::new(),
             semantic: SemanticAnalyzer::new(),
+            codegen,
         }
     }
 
-    /// Compiles preprocessed C source text into Marie assembly output.
+    /// Compiles preprocessed C source text into target backend output.
     pub fn compile_source(&self, source: &str) -> Result<String, CompilerError> {
         let ast = self.parser.parse_translation_unit(source)?;
         self.semantic.analyze(&ast)?;
-        Ok(MarieCodegen::emit(&ast))
+        self.codegen.emit(&ast)
     }
 
     /// Parses and runs semantic analysis, returning intermediate compilation artifacts.
@@ -33,6 +37,13 @@ impl Compiler {
     }
 }
 
+impl DefaultCompiler {
+    /// Creates a new compiler pipeline instance using the Marie backend.
+    pub fn new() -> Self {
+        Self::new_with_codegen(MarieCodegen)
+    }
+}
+
 /// Frontend outputs produced before code generation.
 #[derive(Debug)]
 pub struct FrontendArtifacts {
@@ -40,7 +51,7 @@ pub struct FrontendArtifacts {
     pub semantic_info: SemanticInfo,
 }
 
-impl Default for Compiler {
+impl Default for DefaultCompiler {
     /// Creates a default compiler pipeline instance.
     fn default() -> Self {
         Self::new()
@@ -49,12 +60,25 @@ impl Default for Compiler {
 
 #[cfg(test)]
 mod tests {
-    use super::Compiler;
+    use crate::ast::TranslationUnit;
+    use crate::codegen::{Codegen, MarieCodegen};
+    use crate::error::CompilerError;
+
+    use super::{Compiler, DefaultCompiler};
+
+    #[derive(Debug)]
+    struct TestCodegen;
+
+    impl Codegen for TestCodegen {
+        fn emit(&self, _ast: &TranslationUnit) -> Result<String, CompilerError> {
+            Ok("TEST_BACKEND_OUTPUT".to_string())
+        }
+    }
 
     /// Verifies the compiler pipeline produces placeholder Marie output.
     #[test]
     fn compile_source_returns_marie_output() {
-        let compiler = Compiler::new();
+        let compiler = DefaultCompiler::new();
         let output = compiler
             .compile_source("int main(void) { return 0; }")
             .expect("source should compile in placeholder pipeline");
@@ -65,7 +89,7 @@ mod tests {
     /// Verifies frontend stage returns AST and semantic metadata.
     #[test]
     fn frontend_returns_semantic_artifacts() {
-        let compiler = Compiler::new();
+        let compiler = DefaultCompiler::new();
         let artifacts = compiler
             .frontend("int main(void) { return 0; }")
             .expect("frontend should succeed");
@@ -77,5 +101,22 @@ mod tests {
                 .function_signatures
                 .contains_key("main")
         );
+    }
+
+    /// Verifies compiler can use an injected non-Marie backend.
+    #[test]
+    fn compile_source_uses_injected_codegen_backend() {
+        let compiler = Compiler::new_with_codegen(TestCodegen);
+        let output = compiler
+            .compile_source("int main(void) { return 0; }")
+            .expect("source should compile with test backend");
+
+        assert_eq!(output, "TEST_BACKEND_OUTPUT");
+    }
+
+    /// Verifies default backend alias remains Marie codegen.
+    #[test]
+    fn default_compiler_alias_uses_marie_backend_type() {
+        let _compiler: Compiler<MarieCodegen> = DefaultCompiler::new();
     }
 }
