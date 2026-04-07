@@ -202,6 +202,181 @@ pub enum BinaryOp {
     LogicalOr,
 }
 
+impl TranslationUnit {
+    /// Returns a human-readable s-expression representation of the AST.
+    pub fn pretty_print(&self) -> String {
+        let mut output = String::new();
+        output.push_str("(TranslationUnit\n");
+
+        for item in &self.top_level_items {
+            write_external_declaration(&mut output, item, 1);
+        }
+
+        output.push_str(")\n");
+        output
+    }
+}
+
+fn write_external_declaration(output: &mut String, item: &ExternalDeclaration, depth: usize) {
+    let indent = "  ".repeat(depth);
+
+    match item {
+        ExternalDeclaration::GlobalDeclaration(declaration) => {
+            output.push_str(&format!("{indent}(GlobalDeclaration\n"));
+            for declarator in &declaration.declarators {
+                output.push_str(&format!(
+                    "{indent}  (Declarator {} {:?}\n",
+                    declarator.name, declarator.ty
+                ));
+                if let Some(initializer) = &declarator.initializer {
+                    output.push_str(&format!("{indent}    (Initializer\n"));
+                    write_expression(output, initializer, depth + 3);
+                    output.push_str(&format!("{indent}    )\n"));
+                }
+                output.push_str(&format!("{indent}  )\n"));
+            }
+            output.push_str(&format!("{indent})\n"));
+        }
+        ExternalDeclaration::Function(function) => {
+            output.push_str(&format!("{indent}(Function {}\n", function.name));
+            output.push_str(&format!(
+                "{indent}  (ReturnType {:?})\n",
+                function.return_type
+            ));
+            output.push_str(&format!("{indent}  (Params\n"));
+            for parameter in &function.params {
+                output.push_str(&format!(
+                    "{indent}    (Param {:?} {:?})\n",
+                    parameter.name, parameter.ty
+                ));
+            }
+            output.push_str(&format!("{indent}  )\n"));
+            output.push_str(&format!("{indent}  (Body\n"));
+            write_block(output, &function.body, depth + 2);
+            output.push_str(&format!("{indent}  )\n"));
+            output.push_str(&format!("{indent})\n"));
+        }
+    }
+}
+
+fn write_block(output: &mut String, block: &Block, depth: usize) {
+    let indent = "  ".repeat(depth);
+    output.push_str(&format!("{indent}(Block\n"));
+
+    for item in &block.items {
+        match item {
+            BlockItem::Declaration(declaration) => {
+                output.push_str(&format!("{indent}  (Declaration\n"));
+                for declarator in &declaration.declarators {
+                    output.push_str(&format!(
+                        "{indent}    (Declarator {} {:?}\n",
+                        declarator.name, declarator.ty
+                    ));
+                    if let Some(initializer) = &declarator.initializer {
+                        output.push_str(&format!("{indent}      (Initializer\n"));
+                        write_expression(output, initializer, depth + 4);
+                        output.push_str(&format!("{indent}      )\n"));
+                    }
+                    output.push_str(&format!("{indent}    )\n"));
+                }
+                output.push_str(&format!("{indent}  )\n"));
+            }
+            BlockItem::Statement(statement) => write_statement(output, statement, depth + 1),
+        }
+    }
+
+    output.push_str(&format!("{indent})\n"));
+}
+
+fn write_statement(output: &mut String, statement: &Statement, depth: usize) {
+    let indent = "  ".repeat(depth);
+
+    match statement {
+        Statement::Block(block) => write_block(output, block, depth),
+        Statement::If {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
+            output.push_str(&format!("{indent}(If\n"));
+            output.push_str(&format!("{indent}  (Condition\n"));
+            write_expression(output, condition, depth + 2);
+            output.push_str(&format!("{indent}  )\n"));
+            output.push_str(&format!("{indent}  (Then\n"));
+            write_statement(output, then_branch, depth + 2);
+            output.push_str(&format!("{indent}  )\n"));
+            if let Some(else_statement) = else_branch {
+                output.push_str(&format!("{indent}  (Else\n"));
+                write_statement(output, else_statement, depth + 2);
+                output.push_str(&format!("{indent}  )\n"));
+            }
+            output.push_str(&format!("{indent})\n"));
+        }
+        Statement::Return(expression) => {
+            output.push_str(&format!("{indent}(Return\n"));
+            if let Some(expression) = expression {
+                write_expression(output, expression, depth + 1);
+            }
+            output.push_str(&format!("{indent})\n"));
+        }
+        Statement::Expression(expression) => {
+            output.push_str(&format!("{indent}(ExpressionStatement\n"));
+            if let Some(expression) = expression {
+                write_expression(output, expression, depth + 1);
+            }
+            output.push_str(&format!("{indent})\n"));
+        }
+    }
+}
+
+fn write_expression(output: &mut String, expression: &Expression, depth: usize) {
+    let indent = "  ".repeat(depth);
+
+    match expression {
+        Expression::Identifier { name, .. } => {
+            output.push_str(&format!("{indent}(Identifier {name})\n"));
+        }
+        Expression::IntegerLiteral { value, .. } => {
+            output.push_str(&format!("{indent}(IntegerLiteral {value})\n"));
+        }
+        Expression::Unary { op, expr, .. } => {
+            output.push_str(&format!("{indent}(Unary {:?}\n", op));
+            write_expression(output, expr, depth + 1);
+            output.push_str(&format!("{indent})\n"));
+        }
+        Expression::Binary { op, lhs, rhs, .. } => {
+            output.push_str(&format!("{indent}(Binary {:?}\n", op));
+            write_expression(output, lhs, depth + 1);
+            write_expression(output, rhs, depth + 1);
+            output.push_str(&format!("{indent})\n"));
+        }
+        Expression::Assignment { target, value, .. } => {
+            output.push_str(&format!("{indent}(Assignment\n"));
+            write_expression(output, target, depth + 1);
+            write_expression(output, value, depth + 1);
+            output.push_str(&format!("{indent})\n"));
+        }
+        Expression::Call { callee, args, .. } => {
+            output.push_str(&format!("{indent}(Call\n"));
+            output.push_str(&format!("{indent}  (Callee\n"));
+            write_expression(output, callee, depth + 2);
+            output.push_str(&format!("{indent}  )\n"));
+            output.push_str(&format!("{indent}  (Args\n"));
+            for argument in args {
+                write_expression(output, argument, depth + 2);
+            }
+            output.push_str(&format!("{indent}  )\n"));
+            output.push_str(&format!("{indent})\n"));
+        }
+        Expression::Index { base, index, .. } => {
+            output.push_str(&format!("{indent}(Index\n"));
+            write_expression(output, base, depth + 1);
+            write_expression(output, index, depth + 1);
+            output.push_str(&format!("{indent})\n"));
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -278,5 +453,35 @@ mod tests {
         };
 
         assert_eq!(op, BinaryOp::Add);
+    }
+
+    #[test]
+    fn pretty_print_contains_core_nodes() {
+        let function = FunctionDeclaration {
+            name: "main".to_string(),
+            return_type: Type::Builtin(BuiltinType::Int),
+            params: vec![Parameter {
+                name: None,
+                ty: Type::Builtin(BuiltinType::Void),
+            }],
+            body: Block {
+                items: vec![BlockItem::Statement(Statement::Return(Some(
+                    Expression::IntegerLiteral {
+                        value: 0,
+                        location: None,
+                    },
+                )))],
+            },
+        };
+
+        let unit = TranslationUnit {
+            top_level_items: vec![ExternalDeclaration::Function(function)],
+        };
+
+        let tree = unit.pretty_print();
+        assert!(tree.contains("(TranslationUnit"));
+        assert!(tree.contains("(Function main"));
+        assert!(tree.contains("(Return"));
+        assert!(tree.contains("(IntegerLiteral 0)"));
     }
 }

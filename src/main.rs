@@ -13,6 +13,9 @@ struct Cli {
 
     #[arg(short, long, value_name = "OUTPUT")]
     output: Option<PathBuf>,
+
+    #[arg(long)]
+    dump_ast: bool,
 }
 
 /// Entry point for the command-line compiler executable.
@@ -27,12 +30,18 @@ fn main() {
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
+    let source = fs::read_to_string(&cli.input)?;
+    let compiler = DefaultCompiler::new();
+
+    if cli.dump_ast {
+        let artifacts = compiler.frontend(&source)?;
+        print!("{}", artifacts.ast.pretty_print());
+        return Ok(());
+    }
+
     let output_path = cli
         .output
         .unwrap_or_else(|| default_output_path(&cli.input));
-
-    let source = fs::read_to_string(&cli.input)?;
-    let compiler = DefaultCompiler::new();
     let marie_asm = compiler.compile_source(&source)?;
 
     fs::write(&output_path, marie_asm)?;
