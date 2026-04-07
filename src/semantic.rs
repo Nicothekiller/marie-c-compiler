@@ -710,4 +710,101 @@ mod tests {
             "distinct top-level symbols should be accepted"
         );
     }
+
+    /// Verifies binary arithmetic rejects pointer arithmetic in strict mode.
+    #[test]
+    fn rejects_pointer_arithmetic_in_strict_mode() {
+        assert_semantic_fails("int main(void) { int *p; return p + 1; }");
+    }
+
+    /// Verifies modulo rejects non-integer-like operands.
+    #[test]
+    fn rejects_modulo_with_pointer_operand() {
+        assert_semantic_fails("int main(void) { int *p; return p % 2; }");
+    }
+
+    /// Verifies assignment rejects incompatible pointer and integer values.
+    #[test]
+    fn rejects_pointer_assignment_from_integer_literal() {
+        assert_semantic_fails("int main(void) { int *p; p = 1; return 0; }");
+    }
+
+    /// Verifies assignment rejects incompatible integer and pointer values.
+    #[test]
+    fn rejects_integer_assignment_from_pointer() {
+        assert_semantic_fails("int main(void) { int x; int *p; x = p; return 0; }");
+    }
+
+    /// Verifies call arguments reject strict type mismatches.
+    #[test]
+    fn rejects_call_argument_type_mismatch() {
+        assert_semantic_fails(
+            "int take(int x) { return x; } int main(void) { int *p; return take(p); }",
+        );
+    }
+
+    /// Verifies return rejects incompatible value type for function signature.
+    #[test]
+    fn rejects_return_type_mismatch_pointer_to_int() {
+        assert_semantic_fails("int main(void) { int *p; return p; }");
+    }
+
+    /// Verifies return rejects incompatible value type in pointer function.
+    #[test]
+    fn rejects_return_type_mismatch_int_to_pointer() {
+        assert_semantic_fails("int *main(void) { return 1; }");
+    }
+
+    /// Verifies unary dereference rejects non-pointer operand.
+    #[test]
+    fn rejects_dereference_of_non_pointer_expression() {
+        assert_semantic_fails("int main(void) { int x; return *x; }");
+    }
+
+    /// Verifies unary address-of rejects non-lvalue operand.
+    #[test]
+    fn rejects_address_of_non_lvalue_expression() {
+        assert_semantic_fails("int main(void) { int a; int b; return &(a + b); }");
+    }
+
+    /// Verifies index base must be pointer/array-like.
+    #[test]
+    fn rejects_indexing_non_indexable_base() {
+        assert_semantic_fails("int main(void) { int x; return x[0]; }");
+    }
+
+    /// Verifies index expression must be integer-like.
+    #[test]
+    fn rejects_index_with_pointer_index_expression() {
+        assert_semantic_fails("int main(void) { int arr[4]; int *i; return arr[i]; }");
+    }
+
+    /// Verifies declaration initializer rejects strict type mismatch.
+    #[test]
+    fn rejects_initializer_type_mismatch() {
+        assert_semantic_fails("int x; int *p = x;");
+    }
+
+    /// Verifies strict comparison rejects incompatible pointer/integer types.
+    #[test]
+    fn rejects_comparison_between_pointer_and_integer() {
+        assert_semantic_fails("int main(void) { int *p; int x; if (p == x) return 1; return 0; }");
+    }
+
+    /// Verifies strict-compatible arithmetic remains accepted.
+    #[test]
+    fn accepts_integer_arithmetic_expression() {
+        let result = analyze_source("int main(void) { int a; int b; return a + b * 2; }");
+        assert!(result.is_ok(), "integer arithmetic should remain valid");
+    }
+
+    /// Verifies strict-compatible assignment remains accepted.
+    #[test]
+    fn accepts_integer_assignment_expression() {
+        let result = analyze_source("int main(void) { int a; int b; a = b; return a; }");
+        assert!(
+            result.is_ok(),
+            "same-type integer assignment should remain valid"
+        );
+    }
 }
