@@ -22,36 +22,46 @@ pub enum CompilerError {
 }
 
 impl CompilerError {
-    /// Creates a parse error without source location.
-    pub fn parse(message: impl Into<String>) -> Self {
+    /// Creates a parse error with optional source location.
+    pub fn parse_with_location(
+        message: impl Into<String>,
+        location: Option<SourceLocation>,
+    ) -> Self {
         Self::Parse(Diagnostic {
             message: message.into(),
-            location: None,
+            location,
         })
+    }
+
+    /// Creates a parse error without source location.
+    pub fn parse(message: impl Into<String>) -> Self {
+        Self::parse_with_location(message, None)
     }
 
     /// Creates a parse error with source location.
     pub fn parse_at(message: impl Into<String>, location: SourceLocation) -> Self {
-        Self::Parse(Diagnostic {
+        Self::parse_with_location(message, Some(location))
+    }
+
+    /// Creates a semantic error with optional source location.
+    pub fn semantic_with_location(
+        message: impl Into<String>,
+        location: Option<SourceLocation>,
+    ) -> Self {
+        Self::Semantic(Diagnostic {
             message: message.into(),
-            location: Some(location),
+            location,
         })
     }
 
     /// Creates a semantic error without source location.
     pub fn semantic(message: impl Into<String>) -> Self {
-        Self::Semantic(Diagnostic {
-            message: message.into(),
-            location: None,
-        })
+        Self::semantic_with_location(message, None)
     }
 
     /// Creates a semantic error with source location.
     pub fn semantic_at(message: impl Into<String>, location: SourceLocation) -> Self {
-        Self::Semantic(Diagnostic {
-            message: message.into(),
-            location: Some(location),
-        })
+        Self::semantic_with_location(message, Some(location))
     }
 }
 

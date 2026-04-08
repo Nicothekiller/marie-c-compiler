@@ -136,15 +136,10 @@ impl SemanticAnalyzer {
                             };
                             let init_info = analyze_expression(&global_context, initializer, info)?;
                             if !types_compatible(&declarator.ty, &init_info.ty) {
-                                return Err(match initializer.location() {
-                                    Some(location) => CompilerError::semantic_at(
-                                        "initializer type is incompatible with declaration type",
-                                        location,
-                                    ),
-                                    None => CompilerError::semantic(
-                                        "initializer type is incompatible with declaration type",
-                                    ),
-                                });
+                                return Err(CompilerError::semantic_with_location(
+                                    "initializer type is incompatible with declaration type",
+                                    initializer.location(),
+                                ));
                             }
                         }
 
@@ -220,15 +215,10 @@ fn analyze_block(
                     if let Some(initializer) = &declarator.initializer {
                         let init_info = analyze_expression(context, initializer, info)?;
                         if !types_compatible(&declarator.ty, &init_info.ty) {
-                            return Err(match initializer.location() {
-                                Some(location) => CompilerError::semantic_at(
-                                    "initializer type is incompatible with declaration type",
-                                    location,
-                                ),
-                                None => CompilerError::semantic(
-                                    "initializer type is incompatible with declaration type",
-                                ),
-                            });
+                            return Err(CompilerError::semantic_with_location(
+                                "initializer type is incompatible with declaration type",
+                                initializer.location(),
+                            ));
                         }
                     }
                 }
@@ -268,24 +258,16 @@ fn analyze_statement(
             if let Some(expr) = expression {
                 let return_info = analyze_expression(context, expr, info)?;
                 if context.return_type == Type::Builtin(BuiltinType::Void) {
-                    return Err(match expr.location() {
-                        Some(location) => CompilerError::semantic_at(
-                            "cant return a value on a void function.",
-                            location,
-                        ),
-                        None => CompilerError::semantic("cant return a value on a void function."),
-                    });
+                    return Err(CompilerError::semantic_with_location(
+                        "cant return a value on a void function.",
+                        expr.location(),
+                    ));
                 }
                 if !types_compatible(&context.return_type, &return_info.ty) {
-                    return Err(match expr.location() {
-                        Some(location) => CompilerError::semantic_at(
-                            "return type is incompatible with function signature",
-                            location,
-                        ),
-                        None => CompilerError::semantic(
-                            "return type is incompatible with function signature",
-                        ),
-                    });
+                    return Err(CompilerError::semantic_with_location(
+                        "return type is incompatible with function signature",
+                        expr.location(),
+                    ));
                 }
             } else if context.return_type != Type::Builtin(BuiltinType::Void) {
                 return Err(CompilerError::semantic(
@@ -334,13 +316,10 @@ fn analyze_expression(
                 });
             }
 
-            Err(match location {
-                Some(location) => CompilerError::semantic_at(
-                    format!("undeclared identifier '{}'", name),
-                    *location,
-                ),
-                None => CompilerError::semantic(format!("undeclared identifier '{}'", name)),
-            })
+            Err(CompilerError::semantic_with_location(
+                format!("undeclared identifier '{}'", name),
+                *location,
+            ))
         }
         Expression::IntegerLiteral { .. } => Ok(ExprInfo {
             ty: Type::Builtin(BuiltinType::Int),
@@ -351,15 +330,10 @@ fn analyze_expression(
             match op {
                 UnaryOp::AddressOf => {
                     if !inner.is_lvalue {
-                        return Err(match location {
-                            Some(location) => CompilerError::semantic_at(
-                                "address-of requires an lvalue operand",
-                                *location,
-                            ),
-                            None => {
-                                CompilerError::semantic("address-of requires an lvalue operand")
-                            }
-                        });
+                        return Err(CompilerError::semantic_with_location(
+                            "address-of requires an lvalue operand",
+                            *location,
+                        ));
                     }
                     Ok(ExprInfo {
                         ty: Type::Pointer(Box::new(inner.ty)),
@@ -371,25 +345,17 @@ fn analyze_expression(
                         ty: *pointee,
                         is_lvalue: true,
                     }),
-                    _ => Err(match location {
-                        Some(location) => CompilerError::semantic_at(
-                            "dereference requires a pointer operand",
-                            *location,
-                        ),
-                        None => CompilerError::semantic("dereference requires a pointer operand"),
-                    }),
+                    _ => Err(CompilerError::semantic_with_location(
+                        "dereference requires a pointer operand",
+                        *location,
+                    )),
                 },
                 UnaryOp::Plus | UnaryOp::Minus => {
                     if !is_integer_like(&inner.ty) {
-                        return Err(match location {
-                            Some(location) => CompilerError::semantic_at(
-                                "unary arithmetic requires integer-like operand",
-                                *location,
-                            ),
-                            None => CompilerError::semantic(
-                                "unary arithmetic requires integer-like operand",
-                            ),
-                        });
+                        return Err(CompilerError::semantic_with_location(
+                            "unary arithmetic requires integer-like operand",
+                            *location,
+                        ));
                     }
                     Ok(ExprInfo {
                         ty: inner.ty,
@@ -417,15 +383,10 @@ fn analyze_expression(
                         || !is_integer_like(&right.ty)
                         || left.ty != right.ty
                     {
-                        return Err(match location {
-                            Some(location) => CompilerError::semantic_at(
-                                "arithmetic operators require matching integer-like operands",
-                                *location,
-                            ),
-                            None => CompilerError::semantic(
-                                "arithmetic operators require matching integer-like operands",
-                            ),
-                        });
+                        return Err(CompilerError::semantic_with_location(
+                            "arithmetic operators require matching integer-like operands",
+                            *location,
+                        ));
                     }
                     Ok(ExprInfo {
                         ty: left.ty,
@@ -440,15 +401,10 @@ fn analyze_expression(
                         || !is_integer_like(&right.ty)
                         || left.ty != right.ty
                     {
-                        return Err(match location {
-                            Some(location) => CompilerError::semantic_at(
-                                "relational operators require matching integer-like operands",
-                                *location,
-                            ),
-                            None => CompilerError::semantic(
-                                "relational operators require matching integer-like operands",
-                            ),
-                        });
+                        return Err(CompilerError::semantic_with_location(
+                            "relational operators require matching integer-like operands",
+                            *location,
+                        ));
                     }
                     Ok(ExprInfo {
                         ty: Type::Builtin(BuiltinType::Int),
@@ -457,15 +413,10 @@ fn analyze_expression(
                 }
                 BinaryOp::Equal | BinaryOp::NotEqual => {
                     if !types_compatible(&left.ty, &right.ty) {
-                        return Err(match location {
-                            Some(location) => CompilerError::semantic_at(
-                                "equality operators require compatible operand types",
-                                *location,
-                            ),
-                            None => CompilerError::semantic(
-                                "equality operators require compatible operand types",
-                            ),
-                        });
+                        return Err(CompilerError::semantic_with_location(
+                            "equality operators require compatible operand types",
+                            *location,
+                        ));
                     }
                     Ok(ExprInfo {
                         ty: Type::Builtin(BuiltinType::Int),
@@ -474,15 +425,10 @@ fn analyze_expression(
                 }
                 BinaryOp::LogicalAnd | BinaryOp::LogicalOr => {
                     if !is_scalar_like(&left.ty) || !is_scalar_like(&right.ty) {
-                        return Err(match location {
-                            Some(location) => CompilerError::semantic_at(
-                                "logical operators require scalar-like operands",
-                                *location,
-                            ),
-                            None => CompilerError::semantic(
-                                "logical operators require scalar-like operands",
-                            ),
-                        });
+                        return Err(CompilerError::semantic_with_location(
+                            "logical operators require scalar-like operands",
+                            *location,
+                        ));
                     }
                     Ok(ExprInfo {
                         ty: Type::Builtin(BuiltinType::Int),
@@ -499,20 +445,16 @@ fn analyze_expression(
             let left = analyze_expression(context, target, info)?;
             let right = analyze_expression(context, value, info)?;
             if !left.is_lvalue || !is_lvalue(target) {
-                return Err(match location {
-                    Some(location) => {
-                        CompilerError::semantic_at("assignment target is not an lvalue", *location)
-                    }
-                    None => CompilerError::semantic("assignment target is not an lvalue"),
-                });
+                return Err(CompilerError::semantic_with_location(
+                    "assignment target is not an lvalue",
+                    *location,
+                ));
             }
             if !types_compatible(&left.ty, &right.ty) {
-                return Err(match location {
-                    Some(location) => {
-                        CompilerError::semantic_at("assignment types are incompatible", *location)
-                    }
-                    None => CompilerError::semantic("assignment types are incompatible"),
-                });
+                return Err(CompilerError::semantic_with_location(
+                    "assignment types are incompatible",
+                    *location,
+                ));
             }
             Ok(ExprInfo {
                 ty: left.ty,
@@ -527,72 +469,44 @@ fn analyze_expression(
             let function_name = match &**callee {
                 Expression::Identifier { name, .. } => name,
                 _ => {
-                    return Err(match location {
-                        Some(location) => CompilerError::semantic_at(
-                            "call target must be a function identifier",
-                            *location,
-                        ),
-                        None => {
-                            CompilerError::semantic("call target must be a function identifier")
-                        }
-                    });
+                    return Err(CompilerError::semantic_with_location(
+                        "call target must be a function identifier",
+                        *location,
+                    ));
                 }
             };
             if symbol_exists_in_local_scopes(context, function_name)
                 && !info.function_signatures.contains_key(function_name)
             {
-                return Err(match location {
-                    Some(location) => CompilerError::semantic_at(
-                        format!("'{}' is not callable", function_name),
-                        *location,
-                    ),
-                    None => CompilerError::semantic(format!("'{}' is not callable", function_name)),
-                });
+                return Err(CompilerError::semantic_with_location(
+                    format!("'{}' is not callable", function_name),
+                    *location,
+                ));
             }
             let Some(signature) = info.function_signatures.get(function_name) else {
-                return Err(match location {
-                    Some(location) => CompilerError::semantic_at(
-                        format!("call to undeclared function '{}'", function_name),
-                        *location,
-                    ),
-                    None => CompilerError::semantic(format!(
-                        "call to undeclared function '{}'",
-                        function_name
-                    )),
-                });
+                return Err(CompilerError::semantic_with_location(
+                    format!("call to undeclared function '{}'", function_name),
+                    *location,
+                ));
             };
             if signature.parameter_types.len() != args.len() {
-                return Err(match location {
-                    Some(location) => CompilerError::semantic_at(
-                        format!(
-                            "function '{}' expects {} arguments but got {}",
-                            function_name,
-                            signature.parameter_types.len(),
-                            args.len()
-                        ),
-                        *location,
-                    ),
-                    None => CompilerError::semantic(format!(
+                return Err(CompilerError::semantic_with_location(
+                    format!(
                         "function '{}' expects {} arguments but got {}",
                         function_name,
                         signature.parameter_types.len(),
                         args.len()
-                    )),
-                });
+                    ),
+                    *location,
+                ));
             }
             for (argument, expected_type) in args.iter().zip(signature.parameter_types.iter()) {
                 let argument_info = analyze_expression(context, argument, info)?;
                 if !types_compatible(&argument_info.ty, expected_type) {
-                    return Err(match location {
-                        Some(location) => CompilerError::semantic_at(
-                            format!("argument type mismatch in call to '{}'", function_name),
-                            *location,
-                        ),
-                        None => CompilerError::semantic(format!(
-                            "argument type mismatch in call to '{}'",
-                            function_name
-                        )),
-                    });
+                    return Err(CompilerError::semantic_with_location(
+                        format!("argument type mismatch in call to '{}'", function_name),
+                        *location,
+                    ));
                 }
             }
             Ok(ExprInfo {
@@ -608,13 +522,10 @@ fn analyze_expression(
             let base_info = analyze_expression(context, base, info)?;
             let index_info = analyze_expression(context, index, info)?;
             if !is_integer_like(&index_info.ty) {
-                return Err(match location {
-                    Some(location) => CompilerError::semantic_at(
-                        "index expression must be integer-like",
-                        *location,
-                    ),
-                    None => CompilerError::semantic("index expression must be integer-like"),
-                });
+                return Err(CompilerError::semantic_with_location(
+                    "index expression must be integer-like",
+                    *location,
+                ));
             }
             match base_info.ty {
                 Type::Array { element, .. } => Ok(ExprInfo {
@@ -625,12 +536,10 @@ fn analyze_expression(
                     ty: *element,
                     is_lvalue: true,
                 }),
-                _ => Err(match location {
-                    Some(location) => {
-                        CompilerError::semantic_at("index base must be array or pointer", *location)
-                    }
-                    None => CompilerError::semantic("index base must be array or pointer"),
-                }),
+                _ => Err(CompilerError::semantic_with_location(
+                    "index base must be array or pointer",
+                    *location,
+                )),
             }
         }
     }
