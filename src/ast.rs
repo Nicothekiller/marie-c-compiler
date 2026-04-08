@@ -52,6 +52,7 @@ pub struct ConstExpr {
 pub struct Parameter {
     pub name: Option<String>,
     pub ty: Type,
+    pub location: Option<crate::error::SourceLocation>,
 }
 
 /// Variable declaration entry.
@@ -395,6 +396,7 @@ mod tests {
             params: vec![Parameter {
                 name: Some("argc".to_string()),
                 ty: Type::Builtin(BuiltinType::Int),
+                location: None,
             }],
             body: Block {
                 items: vec![BlockItem::Statement(Statement::Return(Some(
@@ -463,6 +465,7 @@ mod tests {
             params: vec![Parameter {
                 name: None,
                 ty: Type::Builtin(BuiltinType::Void),
+                location: None,
             }],
             body: Block {
                 items: vec![BlockItem::Statement(Statement::Return(Some(

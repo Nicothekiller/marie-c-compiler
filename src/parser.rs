@@ -325,19 +325,23 @@ fn parse_parameter_list(
         let Some(specifier_pair) = inner.next() else {
             return Err(CompilerError::parse("missing parameter type".to_string()));
         };
+        let specifier_location = pair_location(&specifier_pair);
         let base_type = parse_declaration_specifiers(specifier_pair)?;
 
         let parameter = if let Some(declarator_pair) = inner.next() {
+            let declarator_location = pair_location(&declarator_pair);
             let (name, ty) = parse_declarator(source, declarator_pair, base_type)?;
 
             Parameter {
                 name: Some(name),
                 ty,
+                location: Some(declarator_location),
             }
         } else {
             Parameter {
                 name: None,
                 ty: base_type,
+                location: Some(specifier_location),
             }
         };
 

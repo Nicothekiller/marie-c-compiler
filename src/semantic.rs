@@ -82,9 +82,9 @@ impl SemanticAnalyzer {
             match &parameter.name {
                 Some(name) => {
                     if seen_parameters.contains_key(name) {
-                        return Err(CompilerError::semantic(
-                            "multiple parameter declarations with the same name found in function."
-                                .to_string(),
+                        return Err(CompilerError::semantic_with_location(
+                            "multiple parameter declarations with the same name found in function.",
+                            parameter.location,
                         ));
                     }
 
@@ -94,13 +94,15 @@ impl SemanticAnalyzer {
                 None => {
                     if parameter.ty == Type::Builtin(BuiltinType::Void) {
                         if function.params.len() != 1 {
-                            return Err(CompilerError::semantic(
-                                "mixing void parameters with regular parameters or having multiple void parameters isnt allowed.".to_string(),
+                            return Err(CompilerError::semantic_with_location(
+                                "mixing void parameters with regular parameters or having multiple void parameters isnt allowed.",
+                                parameter.location,
                             ));
                         }
                     } else {
-                        return Err(CompilerError::semantic(
-                            "name not found in non-void parameter".to_string(),
+                        return Err(CompilerError::semantic_with_location(
+                            "name not found in non-void parameter",
+                            parameter.location,
                         ));
                     }
                 }
@@ -123,10 +125,13 @@ impl SemanticAnalyzer {
                         if info.global_symbols.contains_key(&declarator.name)
                             || info.function_signatures.contains_key(&declarator.name)
                         {
-                            return Err(CompilerError::semantic(format!(
-                                "duplicate global symbol '{}'",
-                                declarator.name
-                            )));
+                            return Err(CompilerError::semantic_with_location(
+                                format!("duplicate global symbol '{}'", declarator.name),
+                                declarator
+                                    .initializer
+                                    .as_ref()
+                                    .and_then(|expr| expr.location()),
+                            ));
                         }
 
                         if let Some(initializer) = &declarator.initializer {
@@ -163,10 +168,20 @@ impl SemanticAnalyzer {
         info: &mut SemanticInfo,
     ) -> Result<(), CompilerError> {
         if info.global_symbols.contains_key(&function.name) {
-            return Err(CompilerError::semantic(format!(
-                "symbol '{}' used as both global and function",
-                function.name
-            )));
+            let function_location = function.body.items.first().and_then(|item| match item {
+                BlockItem::Statement(crate::ast::Statement::Return(Some(expr))) => expr.location(),
+                BlockItem::Statement(crate::ast::Statement::Expression(Some(expr))) => {
+                    expr.location()
+                }
+                _ => None,
+            });
+            return Err(CompilerError::semantic_with_location(
+                format!(
+                    "symbol '{}' used as both global and function",
+                    function.name
+                ),
+                function_location,
+            ));
         }
 
         let mut parameter_types: Vec<Type> = function
@@ -193,10 +208,21 @@ impl SemanticAnalyzer {
                     .insert(function.name.clone(), signature);
                 Ok(())
             }
-            Some(_) => Err(CompilerError::semantic(format!(
-                "duplicate function definition for '{}'",
-                function.name
-            ))),
+            Some(_) => {
+                let function_location = function.body.items.first().and_then(|item| match item {
+                    BlockItem::Statement(crate::ast::Statement::Return(Some(expr))) => {
+                        expr.location()
+                    }
+                    BlockItem::Statement(crate::ast::Statement::Expression(Some(expr))) => {
+                        expr.location()
+                    }
+                    _ => None,
+                });
+                Err(CompilerError::semantic_with_location(
+                    format!("duplicate function definition for '{}'", function.name),
+                    function_location,
+                ))
+            }
         }
     }
 }
@@ -558,7 +584,7 @@ fn declare_in_current_scope(
 
     if current_scope.contains_key(name) {
         return Err(CompilerError::semantic(
-            "multiple declarations of the same variable found.".to_string(),
+            "multiple declarations of the same variable found.",
         ));
     }
 
@@ -680,7 +706,9 @@ mod tests {
                     params: vec![Parameter {
                         name: Some("argc".to_string()),
                         ty: Type::Builtin(BuiltinType::Int),
+                        location: None,
                     }],
+
                     body: Block::default(),
                 }),
             ],
