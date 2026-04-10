@@ -404,7 +404,7 @@ fn analyze_expression(
             let right = analyze_expression(context, rhs, info)?;
             use crate::ast::BinaryOp;
             match op {
-                BinaryOp::Multiply | BinaryOp::Modulo | BinaryOp::Add | BinaryOp::Subtract => {
+                BinaryOp::Multiply | BinaryOp::Modulo => {
                     if !is_integer_like(&left.ty)
                         || !is_integer_like(&right.ty)
                         || left.ty != right.ty
@@ -418,6 +418,52 @@ fn analyze_expression(
                         ty: left.ty,
                         is_lvalue: false,
                     })
+                }
+                BinaryOp::Add => {
+                    if is_integer_like(&left.ty)
+                        && is_integer_like(&right.ty)
+                        && left.ty == right.ty
+                    {
+                        return Ok(ExprInfo {
+                            ty: left.ty,
+                            is_lvalue: false,
+                        });
+                    }
+
+                    if let Some(result_ty) = pointer_add_result_type(&left.ty, &right.ty) {
+                        return Ok(ExprInfo {
+                            ty: result_ty,
+                            is_lvalue: false,
+                        });
+                    }
+
+                    Err(CompilerError::semantic_with_location(
+                        "addition requires matching integer-like operands or pointer with integer-like operand",
+                        *location,
+                    ))
+                }
+                BinaryOp::Subtract => {
+                    if is_integer_like(&left.ty)
+                        && is_integer_like(&right.ty)
+                        && left.ty == right.ty
+                    {
+                        return Ok(ExprInfo {
+                            ty: left.ty,
+                            is_lvalue: false,
+                        });
+                    }
+
+                    if let Some(result_ty) = pointer_subtract_result_type(&left.ty, &right.ty) {
+                        return Ok(ExprInfo {
+                            ty: result_ty,
+                            is_lvalue: false,
+                        });
+                    }
+
+                    Err(CompilerError::semantic_with_location(
+                        "subtraction requires matching integer-like operands, pointer-integer, or compatible pointer-pointer operands",
+                        *location,
+                    ))
                 }
                 BinaryOp::Less
                 | BinaryOp::LessEqual
@@ -645,9 +691,57 @@ fn is_scalar_like(ty: &Type) -> bool {
     is_integer_like(ty) || matches!(ty, Type::Pointer(_))
 }
 
+/// Returns result type for pointer addition if operands are compatible.
+fn pointer_add_result_type(left: &Type, right: &Type) -> Option<Type> {
+    if matches!(left, Type::Pointer(_)) && is_integer_like(right) {
+        return Some(left.clone());
+    }
+
+    if is_integer_like(left) && matches!(right, Type::Pointer(_)) {
+        return Some(right.clone());
+    }
+
+    None
+}
+
+/// Returns result type for pointer subtraction if operands are compatible.
+fn pointer_subtract_result_type(left: &Type, right: &Type) -> Option<Type> {
+    if matches!(left, Type::Pointer(_)) && is_integer_like(right) {
+        return Some(left.clone());
+    }
+
+    if let (Type::Pointer(left_element), Type::Pointer(right_element)) = (left, right)
+        && types_compatible(left_element, right_element)
+    {
+        return Some(Type::Builtin(BuiltinType::Int));
+    }
+
+    None
+}
+
 /// Returns whether two types are compatible under strict no-conversion rules.
 fn types_compatible(left: &Type, right: &Type) -> bool {
-    left == right
+    if left == right {
+        return true;
+    }
+
+    match (left, right) {
+        (
+            Type::Pointer(left_element),
+            Type::Array {
+                element: right_element,
+                ..
+            },
+        )
+        | (
+            Type::Array {
+                element: left_element,
+                ..
+            },
+            Type::Pointer(right_element),
+        ) => types_compatible(left_element, right_element),
+        _ => false,
+    }
 }
 
 /// Returns whether an expression is assignable as an lvalue in current subset.
@@ -971,10 +1065,12 @@ mod tests {
         );
     }
 
-    /// Verifies binary arithmetic rejects pointer arithmetic in strict mode.
+    /// Verifies pointer plus integer arithmetic is accepted.
     #[test]
-    fn rejects_pointer_arithmetic_in_strict_mode() {
-        assert_semantic_fails("int main(void) { int *p; return p + 1; }");
+    fn accepts_pointer_plus_integer_arithmetic() {
+        let result =
+            analyze_source("int main(void) { int arr[4]; int *p; p = arr; return *(p + 1); }");
+        assert!(result.is_ok(), "pointer plus integer should be accepted");
     }
 
     /// Verifies modulo rejects non-integer-like operands.
@@ -993,6 +1089,16 @@ mod tests {
     #[test]
     fn rejects_integer_assignment_from_pointer() {
         assert_semantic_fails("int main(void) { int x; int *p; x = p; return 0; }");
+    }
+
+    /// Verifies assignment accepts pointer from array decay.
+    #[test]
+    fn accepts_pointer_assignment_from_array_expression() {
+        let result = analyze_source("int main(void) { int arr[4]; int *p; p = arr; return 0; }");
+        assert!(
+            result.is_ok(),
+            "array expression should be compatible with pointer assignment"
+        );
     }
 
     /// Verifies call arguments reject strict type mismatches.
