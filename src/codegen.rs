@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::ast::{Block, Expression, ExternalDeclaration, Statement, TranslationUnit};
+use crate::ast::{Block, Expression, ExternalDeclaration, Statement, TranslationUnit, Type};
 use crate::error::CompilerError;
 
 /// Backend interface for emitting target assembly from AST.
@@ -69,8 +69,15 @@ impl MarieEmitter {
             }
         }
 
-        for label in self.globals.values() {
-            self.data.push(format!("{}, DEC 0", label));
+        for item in &ast.top_level_items {
+            if let ExternalDeclaration::GlobalDeclaration(declaration) = item {
+                for declarator in &declaration.declarators {
+                    let Some(label) = self.globals.get(&declarator.name).cloned() else {
+                        continue;
+                    };
+                    self.emit_storage_for_declarator(&label, &declarator.ty);
+                }
+            }
         }
 
         Ok(())
@@ -191,7 +198,7 @@ impl MarieEmitter {
                             self.next_label_id(),
                             declarator.name
                         );
-                        self.data.push(format!("{}, DEC 0", local_label));
+                        self.emit_storage_for_declarator(&local_label, &declarator.ty);
                         context
                             .scopes
                             .last_mut()
@@ -369,9 +376,11 @@ impl MarieEmitter {
                         self.instructions.push(format!("Store {}", label));
                     }
                     Expression::Index { base, index, .. } => {
+                        self.ensure_index_cells();
+                        self.instructions
+                            .push("Store helper_store_value".to_string());
                         self.emit_index_address(base, index, context)?;
                         self.push_instructions([
-                            "Store helper_store_value".to_string(),
                             "Load helper_store_value".to_string(),
                             "StoreI helper_addr".to_string(),
                         ]);
@@ -434,6 +443,25 @@ impl MarieEmitter {
                 Ok(())
             }
         }
+    }
+
+    fn emit_storage_for_declarator(&mut self, label: &str, ty: &Type) {
+        if let Type::Array { size, .. } = ty {
+            let count = size
+                .and_then(|const_expr| usize::try_from(const_expr.value).ok())
+                .filter(|value| *value > 0)
+                .unwrap_or(1);
+            let first_elem_label = format!("{}_elem_0", label);
+            self.data
+                .push(format!("{}, ADR {}", label, first_elem_label));
+            self.data.push(format!("{}, DEC 0", first_elem_label));
+            for index in 1..count {
+                self.data.push(format!("{}_elem_{}, DEC 0", label, index));
+            }
+            return;
+        }
+
+        self.data.push(format!("{}, DEC 0", label));
     }
 
     fn ensure_zero_const(&mut self) {
