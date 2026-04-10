@@ -41,7 +41,8 @@ fn cli_compiles_input_to_default_mas_file() {
     );
 
     let output_contents = fs::read_to_string(&output_path).expect("should read output file");
-    assert!(output_contents.contains("HALT"));
+    assert!(output_contents.contains("JnS fn_main"));
+    assert!(output_contents.contains("Halt"));
 
     fs::remove_dir_all(&temp_dir).expect("should clean temp directory");
 }

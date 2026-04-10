@@ -17,10 +17,11 @@ This plan assumes the current compiler pipeline:
 - Output uses symbolic labels for readability and patchability.
 
 ### Program layout (high level)
-1. Entry/main code appears at top of emitted file.
-2. Main-related static data and globals are emitted in data section.
-3. Function code blocks follow with static parameter/return cells.
-4. Helper routines (e.g. multiply/mod) are included as needed.
+1. Runtime entry `_start` appears at top of emitted file.
+2. `_start` calls `main` through the normal function ABI (`JnS fn_main`) and then halts.
+3. Global/static data is emitted in deterministic order.
+4. Function code blocks follow with static parameter/return cells.
+5. Helper routines (e.g. multiply/mod) are included as needed.
 
 ### Function ABI model (no stack)
 For each function `f` we reserve static labels:
@@ -139,7 +140,7 @@ Helpers are emitted only when referenced.
 ## Implementation Phases
 
 ### Phase A (minimal runnable)
-- Main function only
+- `_start` runtime entry calling `main`
 - Globals + integer locals
 - `return`, assignment, `+`, `-`, `if`
 

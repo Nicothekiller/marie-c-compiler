@@ -83,7 +83,7 @@ mod tests {
             .compile_source("int main(void) { return 0; }")
             .expect("source should compile in placeholder pipeline");
 
-        assert!(output.contains("HALT"));
+        assert!(output.contains("Halt"));
     }
 
     /// Verifies frontend stage returns AST and semantic metadata.

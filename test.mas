@@ -1,0 +1,71 @@
+/ marie-c-compiler output
+_start, Clear
+JnS fn_main
+Load fn_main_ret
+Output
+Halt
+fn_moduloTest, HEX 000
+fn_moduloTest_body, Clear
+Load fn_moduloTest_param_0
+Store tmp_0
+Load fn_moduloTest_param_1
+Store tmp_1
+Load tmp_0
+Load tmp_0
+Store helper_mul_lhs
+Load tmp_1
+Store helper_mul_rhs
+JnS helper_mul
+Load helper_mul_ret
+Jump fn_moduloTest_end
+fn_moduloTest_end, Store fn_moduloTest_ret
+JumpI fn_moduloTest
+fn_main, HEX 000
+fn_main_body, Clear
+Load const_int_51
+Store v_main_2_x
+Load const_int_5
+Store v_main_3_y
+Load v_main_2_x
+Store fn_moduloTest_param_0
+Load v_main_3_y
+Store fn_moduloTest_param_1
+JnS fn_moduloTest
+Load fn_moduloTest_ret
+Jump fn_main_end
+fn_main_end, Store fn_main_ret
+JumpI fn_main
+helper_mul, HEX 000
+helper_mul_body, Clear
+Store helper_mul_acc
+helper_mul_loop, Load helper_mul_rhs
+Skipcond 400
+Jump helper_mul_continue
+Jump helper_mul_done
+helper_mul_continue, Load helper_mul_acc
+Add helper_mul_lhs
+Store helper_mul_acc
+Load helper_mul_rhs
+Subt const_one
+Store helper_mul_rhs
+Jump helper_mul_loop
+helper_mul_done, Load helper_mul_acc
+Store helper_mul_ret
+JumpI helper_mul
+/ data
+tmp_0, DEC 0
+tmp_1, DEC 0
+fn_moduloTest_ret, DEC 0
+fn_moduloTest_param_0, DEC 0
+fn_moduloTest_param_1, DEC 0
+v_main_2_x, DEC 0
+v_main_3_y, DEC 0
+const_int_51, DEC 51
+const_int_5, DEC 5
+fn_main_ret, DEC 0
+const_zero, DEC 0
+const_one, DEC 1
+helper_mul_lhs, DEC 0
+helper_mul_rhs, DEC 0
+helper_mul_acc, DEC 0
+helper_mul_ret, DEC 0
