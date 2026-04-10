@@ -28,6 +28,7 @@ struct MarieEmitter {
     functions: HashMap<String, PlannedFunction>,
     globals: HashMap<String, String>,
     int_consts: HashMap<i64, String>,
+    addr_consts: HashMap<String, String>,
     label_counter: usize,
     has_zero_const: bool,
     has_one_const: bool,
@@ -285,10 +286,10 @@ impl MarieEmitter {
                 Ok(())
             }
             Expression::Unary { op, expr, .. } => {
-                self.emit_expression(expr, context)?;
                 use crate::ast::UnaryOp;
                 match op {
                     UnaryOp::LogicalNot => {
+                        self.emit_expression(expr, context)?;
                         let zero_label = self.ensure_int_const(0);
                         let one_label = self.ensure_int_const(1);
                         let true_label = format!("unary_not_{}_true", self.next_label_id());
@@ -302,7 +303,31 @@ impl MarieEmitter {
                             format!("{}, Add const_zero", end_label),
                         ]);
                     }
-                    _ => {}
+                    UnaryOp::AddressOf => {
+                        self.emit_address_of(expr, context)?;
+                    }
+                    UnaryOp::Dereference => {
+                        self.ensure_index_cells();
+                        self.emit_expression(expr, context)?;
+                        self.push_instructions([
+                            "Store helper_addr".to_string(),
+                            "LoadI helper_addr".to_string(),
+                        ]);
+                    }
+                    UnaryOp::Plus => {
+                        self.emit_expression(expr, context)?;
+                    }
+                    UnaryOp::Minus => {
+                        self.emit_expression(expr, context)?;
+                        self.ensure_zero_const();
+                        self.ensure_index_cells();
+                        self.instructions
+                            .push("Store helper_store_value".to_string());
+                        self.push_instructions([
+                            "Load const_zero".to_string(),
+                            "Subt helper_store_value".to_string(),
+                        ]);
+                    }
                 }
                 Ok(())
             }
@@ -345,15 +370,31 @@ impl MarieEmitter {
                     }
                     Expression::Index { base, index, .. } => {
                         self.emit_index_address(base, index, context)?;
+                        self.push_instructions([
+                            "Store helper_store_value".to_string(),
+                            "Load helper_store_value".to_string(),
+                            "StoreI helper_addr".to_string(),
+                        ]);
+                    }
+                    Expression::Unary {
+                        op: crate::ast::UnaryOp::Dereference,
+                        expr,
+                        ..
+                    } => {
+                        self.ensure_index_cells();
                         self.instructions
                             .push("Store helper_store_value".to_string());
-                        self.instructions
-                            .push("Load helper_store_value".to_string());
-                        self.instructions.push("StoreI helper_addr".to_string());
+                        self.emit_expression(expr, context)?;
+                        self.push_instructions([
+                            "Store helper_addr".to_string(),
+                            "Load helper_store_value".to_string(),
+                            "StoreI helper_addr".to_string(),
+                        ]);
                     }
                     _ => {
-                        self.instructions
-                            .push("/ TODO: non-identifier assignment target lowering".to_string());
+                        return Err(CompilerError::semantic(
+                            "unsupported assignment target in codegen",
+                        ));
                     }
                 }
                 Ok(())
@@ -362,9 +403,9 @@ impl MarieEmitter {
                 let function_name = if let Expression::Identifier { name, .. } = &**callee {
                     name
                 } else {
-                    self.instructions
-                        .push("/ TODO: non-identifier call target lowering".to_string());
-                    return Ok(());
+                    return Err(CompilerError::semantic(
+                        "call target must be a function identifier",
+                    ));
                 };
 
                 let Some(callee_plan) = self.functions.get(function_name).cloned() else {
@@ -435,6 +476,18 @@ impl MarieEmitter {
         label
     }
 
+    fn ensure_addr_const(&mut self, label: &str) -> String {
+        if let Some(existing) = self.addr_consts.get(label) {
+            return existing.clone();
+        }
+
+        let addr_label = format!("addr_{}", label);
+        self.data.push(format!("{}, ADR {}", addr_label, label));
+        self.addr_consts
+            .insert(label.to_string(), addr_label.clone());
+        addr_label
+    }
+
     fn ensure_index_cells(&mut self) {
         if !self
             .data
@@ -458,18 +511,45 @@ impl MarieEmitter {
         self.emit_expression(index, context)?;
         self.instructions.push("Store helper_index".to_string());
 
-        let base_label = if let Expression::Identifier { name, .. } = base {
-            self.resolve_symbol_label(context, name)?
-        } else {
-            self.instructions
-                .push("/ TODO: complex index base lowering".to_string());
-            "const_zero".to_string()
-        };
-
-        self.instructions.push(format!("Load {}", base_label));
-        self.instructions.push("Add helper_index".to_string());
-        self.instructions.push("Store helper_addr".to_string());
+        self.emit_expression(base, context)?;
+        self.push_instructions([
+            "Add helper_index".to_string(),
+            "Store helper_addr".to_string(),
+        ]);
         Ok(())
+    }
+
+    fn emit_address_of(
+        &mut self,
+        expression: &Expression,
+        context: &mut FunctionEmitContext<'_>,
+    ) -> Result<(), CompilerError> {
+        use crate::ast::UnaryOp;
+
+        match expression {
+            Expression::Identifier { name, .. } => {
+                let label = self.resolve_symbol_label(context, name)?;
+                let addr_label = self.ensure_addr_const(&label);
+                self.instructions.push(format!("Load {}", addr_label));
+                Ok(())
+            }
+            Expression::Index { base, index, .. } => {
+                self.emit_index_address(base, index, context)?;
+                self.instructions.push("Load helper_addr".to_string());
+                Ok(())
+            }
+            Expression::Unary {
+                op: UnaryOp::Dereference,
+                expr,
+                ..
+            } => {
+                self.emit_expression(expr, context)?;
+                Ok(())
+            }
+            _ => Err(CompilerError::semantic(
+                "unsupported address-of target in codegen",
+            )),
+        }
     }
 
     fn emit_mul_call(&mut self, lhs_temp: &str, rhs_temp: &str) {
@@ -910,6 +990,64 @@ mod tests {
         assert!(output.contains("cmp_eq_"));
         assert!(output.contains("logic_and_"));
         assert!(output.contains("unary_not_"));
+    }
+
+    #[test]
+    fn emits_address_of_and_dereference() {
+        let unit = TranslationUnit {
+            top_level_items: vec![ExternalDeclaration::Function(FunctionDeclaration {
+                name: "main".to_string(),
+                return_type: Type::Builtin(BuiltinType::Int),
+                params: vec![Parameter {
+                    name: None,
+                    ty: Type::Builtin(BuiltinType::Void),
+                    location: None,
+                }],
+                body: Block {
+                    items: vec![
+                        BlockItem::Declaration(crate::ast::Declaration {
+                            declarators: vec![crate::ast::Declarator {
+                                name: "x".to_string(),
+                                ty: Type::Builtin(BuiltinType::Int),
+                                initializer: Some(Expression::IntegerLiteral {
+                                    value: 5,
+                                    location: None,
+                                }),
+                            }],
+                        }),
+                        BlockItem::Declaration(crate::ast::Declaration {
+                            declarators: vec![crate::ast::Declarator {
+                                name: "ptr".to_string(),
+                                ty: Type::Pointer(Box::new(Type::Builtin(BuiltinType::Int))),
+                                initializer: Some(Expression::Unary {
+                                    op: crate::ast::UnaryOp::AddressOf,
+                                    expr: Box::new(Expression::Identifier {
+                                        name: "x".to_string(),
+                                        location: None,
+                                    }),
+                                    location: None,
+                                }),
+                            }],
+                        }),
+                        BlockItem::Statement(Statement::Return(Some(Expression::Unary {
+                            op: crate::ast::UnaryOp::Dereference,
+                            expr: Box::new(Expression::Identifier {
+                                name: "ptr".to_string(),
+                                location: None,
+                            }),
+                            location: None,
+                        }))),
+                    ],
+                },
+            })],
+        };
+
+        let output = MarieCodegen
+            .emit(&unit)
+            .expect("codegen should emit address-of and dereference");
+
+        assert!(output.contains("LoadI helper_addr"));
+        assert!(output.contains("addr_v_"));
     }
 
     #[test]
