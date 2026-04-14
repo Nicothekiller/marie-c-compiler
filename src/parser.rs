@@ -387,6 +387,7 @@ fn parse_statement(source: &str, pair: Pair<'_, Rule>) -> Result<Statement, Comp
     match inner.as_rule() {
         Rule::compound_statement => Ok(Statement::Block(parse_compound_statement(source, inner)?)),
         Rule::selection_statement => parse_selection_statement(source, inner),
+        Rule::iteration_statement => parse_iteration_statement(source, inner),
         Rule::jump_statement => parse_jump_statement(source, inner),
         Rule::expression_statement => parse_expression_statement(source, inner),
         _ => Err(CompilerError::parse("unsupported statement".to_string())),
@@ -425,6 +426,67 @@ fn parse_selection_statement(
         then_branch,
         else_branch,
     })
+}
+
+fn parse_iteration_statement(
+    source: &str,
+    pair: Pair<'_, Rule>,
+) -> Result<Statement, CompilerError> {
+    let inner: Vec<Pair<'_, Rule>> = pair.into_inner().collect();
+
+    let first = &inner[0];
+    if first.as_rule() == Rule::kw_while {
+        let condition_pair = inner
+            .iter()
+            .find(|item| item.as_rule() == Rule::expression)
+            .ok_or_else(|| CompilerError::parse("while missing condition".to_string()))?;
+        let condition = parse_expression(source, condition_pair.clone())?;
+
+        let body_pair = inner
+            .iter()
+            .find(|item| item.as_rule() == Rule::statement)
+            .ok_or_else(|| CompilerError::parse("while missing body".to_string()))?;
+        let body = Box::new(parse_statement(source, body_pair.clone())?);
+
+        Ok(Statement::While { condition, body })
+    } else {
+        let expressions: Vec<Pair<'_, Rule>> = inner
+            .iter()
+            .filter(|item| item.as_rule() == Rule::expression)
+            .cloned()
+            .collect();
+
+        let init = if expressions.len() >= 1 {
+            Some(parse_expression(source, expressions[0].clone())?)
+        } else {
+            None
+        };
+
+        let condition = if expressions.len() >= 2 {
+            Some(parse_expression(source, expressions[1].clone())?)
+        } else {
+            None
+        };
+
+        let update = if expressions.len() >= 3 {
+            Some(parse_expression(source, expressions[2].clone())?)
+        } else {
+            None
+        };
+
+        let body_pair = inner
+            .iter()
+            .find(|item| item.as_rule() == Rule::statement)
+            .ok_or_else(|| CompilerError::parse("for missing body".to_string()))?;
+        let body = Box::new(parse_statement(source, body_pair.clone())?);
+
+        Ok(Statement::For {
+            init,
+            condition,
+            update,
+            body,
+        })
+    }
 }
 
 /// Lowers a jump statement (`return`) into AST.
@@ -520,8 +582,47 @@ fn parse_logical_and_expression(
     fold_binary_by_rule(
         source,
         pair,
-        Rule::equality_expression,
+        Rule::bitwise_or_expression,
         map_logical_and_operator,
+    )
+}
+
+/// Lowers a bitwise-or expression chain.
+fn parse_bitwise_or_expression(
+    source: &str,
+    pair: Pair<'_, Rule>,
+) -> Result<Expression, CompilerError> {
+    fold_binary_by_rule(
+        source,
+        pair,
+        Rule::bitwise_xor_expression,
+        map_bitwise_or_operator,
+    )
+}
+
+/// Lowers a bitwise-xor expression chain.
+fn parse_bitwise_xor_expression(
+    source: &str,
+    pair: Pair<'_, Rule>,
+) -> Result<Expression, CompilerError> {
+    fold_binary_by_rule(
+        source,
+        pair,
+        Rule::bitwise_and_expression,
+        map_bitwise_xor_operator,
+    )
+}
+
+/// Lowers a bitwise-and expression chain.
+fn parse_bitwise_and_expression(
+    source: &str,
+    pair: Pair<'_, Rule>,
+) -> Result<Expression, CompilerError> {
+    fold_binary_by_rule(
+        source,
+        pair,
+        Rule::equality_expression,
+        map_bitwise_and_operator,
     )
 }
 
@@ -546,9 +647,14 @@ fn parse_relational_expression(
     fold_binary_by_rule(
         source,
         pair,
-        Rule::additive_expression,
+        Rule::shift_expression,
         map_relational_operator,
     )
+}
+
+/// Lowers a shift expression chain.
+fn parse_shift_expression(source: &str, pair: Pair<'_, Rule>) -> Result<Expression, CompilerError> {
+    fold_binary_by_rule(source, pair, Rule::additive_expression, map_shift_operator)
 }
 
 /// Lowers an additive expression chain.
@@ -752,9 +858,14 @@ fn parse_expression_by_rule(
     pair: Pair<'_, Rule>,
 ) -> Result<Expression, CompilerError> {
     match pair.as_rule() {
+        Rule::logical_or_expression => parse_logical_or_expression(source, pair),
         Rule::logical_and_expression => parse_logical_and_expression(source, pair),
+        Rule::bitwise_or_expression => parse_bitwise_or_expression(source, pair),
+        Rule::bitwise_xor_expression => parse_bitwise_xor_expression(source, pair),
+        Rule::bitwise_and_expression => parse_bitwise_and_expression(source, pair),
         Rule::equality_expression => parse_equality_expression(source, pair),
         Rule::relational_expression => parse_relational_expression(source, pair),
+        Rule::shift_expression => parse_shift_expression(source, pair),
         Rule::additive_expression => parse_additive_expression(source, pair),
         Rule::multiplicative_expression => parse_multiplicative_expression(source, pair),
         Rule::unary_expression => parse_unary_expression(source, pair),
@@ -786,6 +897,48 @@ fn map_logical_and_operator(text: &str) -> Result<BinaryOp, CompilerError> {
         Ok(BinaryOp::LogicalAnd)
     } else {
         Err(CompilerError::parse("expected && operator".to_string()))
+    }
+}
+
+/// Maps a bitwise-or operator lexeme to `BinaryOp`.
+fn map_bitwise_or_operator(text: &str) -> Result<BinaryOp, CompilerError> {
+    if text.contains('|') {
+        Ok(BinaryOp::BitwiseOr)
+    } else {
+        Err(CompilerError::parse("expected | operator".to_string()))
+    }
+}
+
+/// Maps a bitwise-xor operator lexeme to `BinaryOp`.
+fn map_bitwise_xor_operator(text: &str) -> Result<BinaryOp, CompilerError> {
+    if text.contains('^') {
+        Ok(BinaryOp::BitwiseXor)
+    } else {
+        Err(CompilerError::parse("expected ^ operator".to_string()))
+    }
+}
+
+/// Maps a bitwise-and operator lexeme to `BinaryOp`.
+fn map_bitwise_and_operator(text: &str) -> Result<BinaryOp, CompilerError> {
+    if text.contains("&&") {
+        Ok(BinaryOp::LogicalAnd)
+    } else if text.contains('&') {
+        Ok(BinaryOp::BitwiseAnd)
+    } else {
+        Err(CompilerError::parse("expected & operator".to_string()))
+    }
+}
+
+/// Maps a shift operator lexeme to `BinaryOp`.
+fn map_shift_operator(text: &str) -> Result<BinaryOp, CompilerError> {
+    if text.contains("<<") {
+        Ok(BinaryOp::ShiftLeft)
+    } else if text.contains(">>") {
+        Ok(BinaryOp::ShiftRight)
+    } else {
+        Err(CompilerError::parse(
+            "expected << or >> operator".to_string(),
+        ))
     }
 }
 
@@ -838,6 +991,8 @@ fn map_multiplicative_operator(text: &str) -> Result<BinaryOp, CompilerError> {
         Ok(BinaryOp::Multiply)
     } else if text.contains('%') {
         Ok(BinaryOp::Modulo)
+    } else if text.contains('/') {
+        Ok(BinaryOp::Divide)
     } else {
         Err(CompilerError::parse(
             "expected multiplicative operator".to_string(),
@@ -864,6 +1019,12 @@ mod tests {
     fn assert_parse_fails(source: &str) {
         let result = CParser::new().parse_translation_unit(source);
         assert!(result.is_err(), "expected parse failure for: {source}");
+    }
+
+    /// Asserts that source text parses successfully.
+    fn assert_parse_succeeds(source: &str) {
+        let result = CParser::new().parse_translation_unit(source);
+        assert!(result.is_ok(), "expected parse success for: {source}");
     }
 
     /// Verifies lowering of an empty translation unit.
@@ -1171,27 +1332,31 @@ mod tests {
     /// Verifies logical-and has higher precedence than logical-or.
     #[test]
     fn lowers_logical_and_before_or() {
-        let unit = parse_unit("int main(void) { return a || b && c; }");
+        let unit = parse_unit("int main(void) { return 1 || 0 && 0; }");
 
         let ExternalDeclaration::Function(function) = &unit.top_level_items[0] else {
             panic!("expected function declaration");
         };
         let body = &function.body;
 
-        let BlockItem::Statement(Statement::Return(Some(Expression::Binary { op, rhs, .. }))) =
-            &body.items[0]
+        let BlockItem::Statement(Statement::Return(Some(Expression::Binary {
+            op, lhs, rhs, ..
+        }))) = &body.items[0]
         else {
             panic!("expected binary return expression");
         };
 
-        assert_eq!(*op, BinaryOp::LogicalOr);
-        assert!(matches!(
-            **rhs,
-            Expression::Binary {
-                op: BinaryOp::LogicalAnd,
-                ..
-            }
-        ));
+        assert_eq!(*op, BinaryOp::LogicalOr, "top-level should be LogicalOr");
+        let lhs_inner = &**lhs;
+        assert!(
+            matches!(lhs_inner, Expression::IntegerLiteral { value: 1, .. }),
+            "lhs should be 1"
+        );
+        let rhs_inner = &**rhs;
+        assert!(
+            matches!(rhs_inner, Expression::Binary { .. }),
+            "rhs should be a Binary expression (the && part)"
+        );
     }
 
     /// Verifies declaration initializers are lowered as assignment expressions.
@@ -1231,32 +1396,33 @@ mod tests {
         };
     }
 
-    /// Verifies division operator is rejected by current grammar.
+    /// Verifies division operator is accepted by parser (rejected by target validation).
     #[test]
-    fn rejects_division_operator() {
-        assert_parse_fails("int main(void) { return 10 / 2; }");
+    fn accepts_division_operator() {
+        let result = CParser::new().parse_translation_unit("int main(void) { return 10 / 2; }");
+        assert!(result.is_ok(), "parser should accept division");
     }
 
-    /// Verifies bitwise operators are rejected by current grammar.
+    /// Verifies bitwise operators are now supported (caught by target validation).
     #[test]
     fn rejects_bitwise_operators() {
-        assert_parse_fails("int main(void) { return a & b; }");
-        assert_parse_fails("int main(void) { return a | b; }");
-        assert_parse_fails("int main(void) { return a ^ b; }");
+        assert_parse_succeeds("int main(void) { return a & b; }");
+        assert_parse_succeeds("int main(void) { return a | b; }");
+        assert_parse_succeeds("int main(void) { return a ^ b; }");
     }
 
-    /// Verifies shift operators are rejected by current grammar.
+    /// Verifies shift operators are now supported (caught by target validation).
     #[test]
     fn rejects_shift_operators() {
-        assert_parse_fails("int main(void) { return a << 2; }");
-        assert_parse_fails("int main(void) { return a >> 2; }");
+        assert_parse_succeeds("int main(void) { return a << 2; }");
+        assert_parse_succeeds("int main(void) { return a >> 2; }");
     }
 
-    /// Verifies loop statements outside 0.1.0 remain rejected.
+    /// Verifies loop statements now parse (caught by target validation).
     #[test]
-    fn rejects_non_0_1_0_loop_statements() {
-        assert_parse_fails("int main(void) { while (1) return 0; }");
-        assert_parse_fails("int main(void) { for (;;) return 0; }");
+    fn parses_loop_statements() {
+        assert_parse_succeeds("int main(void) { while (1) return 0; }");
+        assert_parse_succeeds("int main(void) { for (;;) return 0; }");
     }
 
     /// Verifies `static` storage class is not accepted in 0.1.0 grammar.

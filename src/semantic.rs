@@ -308,6 +308,22 @@ fn analyze_statement(
             }
             Ok(())
         }
+        crate::ast::Statement::While { condition, body } => {
+            analyze_expression(context, condition, info)?;
+            analyze_statement(context, body, info)
+        }
+        crate::ast::Statement::For { init, condition, update, body } => {
+            if let Some(init_expr) = init {
+                analyze_expression(context, init_expr, info)?;
+            }
+            if let Some(cond_expr) = condition {
+                analyze_expression(context, cond_expr, info)?;
+            }
+            if let Some(upd_expr) = update {
+                analyze_expression(context, upd_expr, info)?;
+            }
+            analyze_statement(context, body, info)
+        }
     }
 }
 
@@ -502,6 +518,12 @@ fn analyze_expression(
                             *location,
                         ));
                     }
+                    Ok(ExprInfo {
+                        ty: Type::Builtin(BuiltinType::Int),
+                        is_lvalue: false,
+                    })
+                }
+                _ => {
                     Ok(ExprInfo {
                         ty: Type::Builtin(BuiltinType::Int),
                         is_lvalue: false,

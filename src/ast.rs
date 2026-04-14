@@ -100,6 +100,16 @@ pub enum Statement {
         then_branch: Box<Statement>,
         else_branch: Option<Box<Statement>>,
     },
+    While {
+        condition: Expression,
+        body: Box<Statement>,
+    },
+    For {
+        init: Option<Expression>,
+        condition: Option<Expression>,
+        update: Option<Expression>,
+        body: Box<Statement>,
+    },
     Return(Option<Expression>),
     Expression(Option<Expression>),
 }
@@ -201,6 +211,12 @@ pub enum BinaryOp {
     NotEqual,
     LogicalAnd,
     LogicalOr,
+    Divide,
+    ShiftLeft,
+    ShiftRight,
+    BitwiseAnd,
+    BitwiseOr,
+    BitwiseXor,
 }
 
 impl TranslationUnit {
@@ -325,6 +341,43 @@ fn write_statement(output: &mut String, statement: &Statement, depth: usize) {
             if let Some(expression) = expression {
                 write_expression(output, expression, depth + 1);
             }
+            output.push_str(&format!("{indent})\n"));
+        }
+        Statement::While { condition, body } => {
+            output.push_str(&format!("{indent}(While\n"));
+            output.push_str(&format!("{indent}  (Condition\n"));
+            write_expression(output, condition, depth + 2);
+            output.push_str(&format!("{indent}  )\n"));
+            output.push_str(&format!("{indent}  (Body\n"));
+            write_statement(output, body, depth + 2);
+            output.push_str(&format!("{indent}  )\n"));
+            output.push_str(&format!("{indent})\n"));
+        }
+        Statement::For {
+            init,
+            condition,
+            update,
+            body,
+        } => {
+            output.push_str(&format!("{indent}(For\n"));
+            if let Some(init) = init {
+                output.push_str(&format!("{indent}  (Init\n"));
+                write_expression(output, init, depth + 2);
+                output.push_str(&format!("{indent}  )\n"));
+            }
+            if let Some(condition) = condition {
+                output.push_str(&format!("{indent}  (Condition\n"));
+                write_expression(output, condition, depth + 2);
+                output.push_str(&format!("{indent}  )\n"));
+            }
+            if let Some(update) = update {
+                output.push_str(&format!("{indent}  (Update\n"));
+                write_expression(output, update, depth + 2);
+                output.push_str(&format!("{indent}  )\n"));
+            }
+            output.push_str(&format!("{indent}  (Body\n"));
+            write_statement(output, body, depth + 2);
+            output.push_str(&format!("{indent}  )\n"));
             output.push_str(&format!("{indent})\n"));
         }
     }

@@ -19,6 +19,7 @@ pub enum CompilerError {
     Io(std::io::Error),
     Parse(Diagnostic),
     Semantic(Diagnostic),
+    UnsupportedFeature(Diagnostic),
 }
 
 impl CompilerError {
@@ -63,6 +64,27 @@ impl CompilerError {
     pub fn semantic_at(message: impl Into<String>, location: SourceLocation) -> Self {
         Self::semantic_with_location(message, Some(location))
     }
+
+    /// Creates an unsupported feature error with optional source location.
+    pub fn unsupported_with_location(
+        message: impl Into<String>,
+        location: Option<SourceLocation>,
+    ) -> Self {
+        Self::UnsupportedFeature(Diagnostic {
+            message: message.into(),
+            location,
+        })
+    }
+
+    /// Creates an unsupported feature error without source location.
+    pub fn unsupported(message: impl Into<String>) -> Self {
+        Self::unsupported_with_location(message, None)
+    }
+
+    /// Creates an unsupported feature error with source location.
+    pub fn unsupported_at(message: impl Into<String>, location: SourceLocation) -> Self {
+        Self::unsupported_with_location(message, Some(location))
+    }
 }
 
 impl Display for CompilerError {
@@ -72,6 +94,9 @@ impl Display for CompilerError {
             Self::Io(error) => write!(f, "io error: {error}"),
             Self::Parse(diagnostic) => format_diagnostic(f, "parse", diagnostic),
             Self::Semantic(diagnostic) => format_diagnostic(f, "semantic", diagnostic),
+            Self::UnsupportedFeature(diagnostic) => {
+                format_diagnostic(f, "unsupported feature", diagnostic)
+            }
         }
     }
 }

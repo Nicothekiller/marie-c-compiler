@@ -1,12 +1,138 @@
 use std::collections::HashMap;
 
-use crate::ast::{Block, Expression, ExternalDeclaration, Statement, TranslationUnit, Type};
+use crate::ast::{BinaryOp, Block, BlockItem, Expression, ExternalDeclaration, Statement, TranslationUnit, Type};
 use crate::error::CompilerError;
 
 /// Backend interface for emitting target assembly from AST.
 pub trait Codegen {
     /// Emits target output text from a semantic-validated AST.
     fn emit(&self, ast: &TranslationUnit) -> Result<String, CompilerError>;
+}
+
+/// Target-specific validation for unsupported features.
+pub trait TargetValidation {
+    /// Validates the AST contains only features supported by this target.
+    fn validate(&self, _ast: &TranslationUnit) -> Result<(), CompilerError> {
+        Ok(())
+    }
+
+    /// Binary operations not supported by this target.
+    fn unsupported_binary_ops(&self) -> &'static [BinaryOp] {
+        &[]
+    }
+
+    /// Statement types not supported by this target.
+    fn unsupported_statement_kinds(&self) -> &'static [fn() -> Statement] {
+        &[]
+    }
+}
+
+fn validate_ast(
+    ast: &TranslationUnit,
+    unsupported_ops: &[BinaryOp],
+    _unsupported_stmts: &[fn() -> Statement],
+) -> Result<(), CompilerError> {
+    for item in &ast.top_level_items {
+        match item {
+            ExternalDeclaration::Function(f) => validate_block(&f.body, unsupported_ops)?,
+            ExternalDeclaration::GlobalDeclaration(d) => {
+                for decl in &d.declarators {
+                    if let Some(init) = &decl.initializer {
+                        validate_expression(init, unsupported_ops)?;
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_block(block: &Block, unsupported_ops: &[BinaryOp]) -> Result<(), CompilerError> {
+    for item in &block.items {
+        match item {
+            BlockItem::Declaration(d) => {
+                for decl in &d.declarators {
+                    if let Some(init) = &decl.initializer {
+                        validate_expression(init, unsupported_ops)?;
+                    }
+                }
+            }
+            BlockItem::Statement(s) => validate_statement(s, unsupported_ops)?,
+        }
+    }
+    Ok(())
+}
+
+fn validate_statement(stmt: &Statement, unsupported_ops: &[BinaryOp]) -> Result<(), CompilerError> {
+    match stmt {
+        Statement::Block(b) => validate_block(b, unsupported_ops)?,
+        Statement::If { condition, then_branch, else_branch } => {
+            validate_expression(condition, unsupported_ops)?;
+            validate_statement(then_branch, unsupported_ops)?;
+            if let Some(else_b) = else_branch {
+                validate_statement(else_b, unsupported_ops)?;
+            }
+        }
+        Statement::While { condition, body } => {
+            validate_expression(condition, unsupported_ops)?;
+            validate_statement(body, unsupported_ops)?;
+        }
+        Statement::For { init, condition, update, body } => {
+            if let Some(i) = init {
+                validate_expression(i, unsupported_ops)?;
+            }
+            if let Some(c) = condition {
+                validate_expression(c, unsupported_ops)?;
+            }
+            if let Some(u) = update {
+                validate_expression(u, unsupported_ops)?;
+            }
+            validate_statement(body, unsupported_ops)?;
+        }
+        Statement::Return(e) => {
+            if let Some(expr) = e {
+                validate_expression(expr, unsupported_ops)?;
+            }
+        }
+        Statement::Expression(e) => {
+            if let Some(expr) = e {
+                validate_expression(expr, unsupported_ops)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_expression(expr: &Expression, unsupported_ops: &[BinaryOp]) -> Result<(), CompilerError> {
+    match expr {
+        Expression::Binary { op, lhs, rhs, location } => {
+            if unsupported_ops.contains(op) {
+                return Err(CompilerError::unsupported_with_location(
+                    format!("operator {:?} not supported by target", op),
+                    *location,
+                ));
+            }
+            validate_expression(lhs, unsupported_ops)?;
+            validate_expression(rhs, unsupported_ops)?;
+        }
+        Expression::Unary { expr: e, .. } => validate_expression(e, unsupported_ops)?,
+        Expression::Assignment { target, value, .. } => {
+            validate_expression(target, unsupported_ops)?;
+            validate_expression(value, unsupported_ops)?;
+        }
+        Expression::Call { callee, args, .. } => {
+            validate_expression(callee, unsupported_ops)?;
+            for arg in args {
+                validate_expression(arg, unsupported_ops)?;
+            }
+        }
+        Expression::Index { base, index, .. } => {
+            validate_expression(base, unsupported_ops)?;
+            validate_expression(index, unsupported_ops)?;
+        }
+        Expression::Identifier { .. } | Expression::IntegerLiteral { .. } => {}
+    }
+    Ok(())
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -18,6 +144,23 @@ impl Codegen for MarieCodegen {
         let mut emitter = MarieEmitter::default();
         emitter.emit_translation_unit(ast)?;
         Ok(emitter.finish())
+    }
+}
+
+impl TargetValidation for MarieCodegen {
+    fn unsupported_binary_ops(&self) -> &'static [BinaryOp] {
+        &[
+            BinaryOp::Divide,
+            BinaryOp::ShiftLeft,
+            BinaryOp::ShiftRight,
+            BinaryOp::BitwiseAnd,
+            BinaryOp::BitwiseOr,
+            BinaryOp::BitwiseXor,
+        ]
+    }
+
+    fn validate(&self, ast: &TranslationUnit) -> Result<(), CompilerError> {
+        validate_ast(ast, self.unsupported_binary_ops(), self.unsupported_statement_kinds())
     }
 }
 
@@ -273,6 +416,56 @@ impl MarieEmitter {
                 }
                 Ok(())
             }
+            Statement::While { condition, body } => {
+                let loop_id = self.next_label_id();
+                let cond_label = format!("while_cond_{}", loop_id);
+                let end_label = format!("while_end_{}", loop_id);
+
+                self.push_instructions([format!("Jump {}", cond_label)]);
+                self.instructions
+                    .push(format!("{}, Clear", cond_label));
+                self.emit_expression(condition, context)?;
+                self.push_instructions([
+                    "Skipcond 0C00".to_string(),
+                    format!("Jump {}", end_label),
+                ]);
+                self.emit_statement(body, context)?;
+                self.push_instructions([format!("Jump {}", cond_label)]);
+                self.instructions
+                    .push(format!("{}, Clear", end_label));
+                Ok(())
+            }
+            Statement::For { init, condition, update, body } => {
+                let loop_id = self.next_label_id();
+                let cond_label = format!("for_cond_{}", loop_id);
+                let end_label = format!("for_end_{}", loop_id);
+
+                if let Some(init) = init {
+                    self.emit_expression(init, context)?;
+                }
+                if let Some(cond) = condition {
+                    self.push_instructions([format!("Jump {}", cond_label)]);
+                    self.instructions
+                        .push(format!("{}, Clear", cond_label));
+                    self.emit_expression(cond, context)?;
+                    self.push_instructions([
+                        "Skipcond 0C00".to_string(),
+                        format!("Jump {}", end_label),
+                    ]);
+                } else {
+                    self.push_instructions([format!("Jump {}", cond_label)]);
+                    self.instructions
+                        .push(format!("{}, Clear", cond_label));
+                }
+                self.emit_statement(body, context)?;
+                if let Some(upd) = update {
+                    self.emit_expression(upd, context)?;
+                }
+                self.push_instructions([format!("Jump {}", cond_label)]);
+                self.instructions
+                    .push(format!("{}, Clear", end_label));
+                Ok(())
+            }
         }
     }
 
@@ -365,6 +558,13 @@ impl MarieEmitter {
                     BinaryOp::LogicalOr => self.emit_logical_or(&lhs_temp, &rhs_temp),
                     BinaryOp::Multiply => self.emit_mul_call(&lhs_temp, &rhs_temp),
                     BinaryOp::Modulo => self.emit_mod_call(&lhs_temp, &rhs_temp),
+                    BinaryOp::Divide | BinaryOp::ShiftLeft | BinaryOp::ShiftRight
+                    | BinaryOp::BitwiseAnd | BinaryOp::BitwiseOr | BinaryOp::BitwiseXor => {
+                        return Err(CompilerError::unsupported(format!(
+                            "binary operator {:?} not supported by target",
+                            op
+                        )));
+                    }
                 }
                 Ok(())
             }
@@ -1584,5 +1784,344 @@ mod tests {
             count_store_tmp_before >= 1,
             "expected at least one Store tmp_ before Subt (lhs/rhs temps)"
         );
+    }
+
+    /// Verifies while loop generates proper MARIE labels.
+    /// Expected output contains: Jump while_cond_X, while_cond_X, Clear, while_end_X, Clear
+    #[test]
+    fn emits_while_loop_labels() {
+        let unit = TranslationUnit {
+            top_level_items: vec![ExternalDeclaration::Function(FunctionDeclaration {
+                name: "main".to_string(),
+                return_type: Type::Builtin(BuiltinType::Int),
+                params: vec![Parameter {
+                    name: None,
+                    ty: Type::Builtin(BuiltinType::Void),
+                    location: None,
+                }],
+                body: Block {
+                    items: vec![BlockItem::Statement(Statement::While {
+                        condition: Expression::IntegerLiteral { value: 1, location: None },
+                        body: Box::new(Statement::Return(Some(Expression::IntegerLiteral {
+                            value: 42,
+                            location: None,
+                        }))),
+                    })],
+                },
+            })],
+        };
+
+        let output = MarieCodegen.emit(&unit).expect("codegen should succeed");
+        assert!(output.contains("while_cond_"));
+        assert!(output.contains("while_end_"));
+        assert!(output.contains("Jump while_cond_"));
+    }
+
+    /// Verifies while loop with condition generates Skipcond instruction.
+    #[test]
+    fn emits_while_with_condition_check() {
+        let unit = TranslationUnit {
+            top_level_items: vec![ExternalDeclaration::Function(FunctionDeclaration {
+                name: "main".to_string(),
+                return_type: Type::Builtin(BuiltinType::Int),
+                params: vec![Parameter {
+                    name: None,
+                    ty: Type::Builtin(BuiltinType::Void),
+                    location: None,
+                }],
+                body: Block {
+                    items: vec![
+                        BlockItem::Declaration(crate::ast::Declaration {
+                            declarators: vec![crate::ast::Declarator {
+                                name: "x".to_string(),
+                                ty: Type::Builtin(BuiltinType::Int),
+                                initializer: None,
+                            }],
+                        }),
+                        BlockItem::Statement(Statement::While {
+                            condition: Expression::Binary {
+                                op: crate::ast::BinaryOp::Less,
+                                lhs: Box::new(Expression::Identifier {
+                                    name: "x".to_string(),
+                                    location: None,
+                                }),
+                                rhs: Box::new(Expression::IntegerLiteral {
+                                    value: 5,
+                                    location: None,
+                                }),
+                                location: None,
+                            },
+                            body: Box::new(Statement::Expression(Some(Expression::Assignment {
+                                target: Box::new(Expression::Identifier {
+                                    name: "x".to_string(),
+                                    location: None,
+                                }),
+                                value: Box::new(Expression::Binary {
+                                    op: crate::ast::BinaryOp::Add,
+                                    lhs: Box::new(Expression::Identifier {
+                                        name: "x".to_string(),
+                                        location: None,
+                                    }),
+                                    rhs: Box::new(Expression::IntegerLiteral {
+                                        value: 1,
+                                        location: None,
+                                    }),
+                                    location: None,
+                                }),
+                                location: None,
+                            }))),
+                        }),
+                        BlockItem::Statement(Statement::Return(Some(Expression::Identifier {
+                            name: "x".to_string(),
+                            location: None,
+                        }))),
+                    ],
+                },
+            })],
+        };
+
+        let output = MarieCodegen.emit(&unit).expect("codegen should succeed");
+        assert!(output.contains("Skipcond"));
+        assert!(output.contains("Jump while_end_"));
+    }
+
+    /// Verifies for loop generates proper MARIE labels.
+    /// Expected output contains: Jump for_cond_X, for_cond_X, Clear, for_end_X, Clear
+    #[test]
+    fn emits_for_loop_labels() {
+        let unit = TranslationUnit {
+            top_level_items: vec![ExternalDeclaration::Function(FunctionDeclaration {
+                name: "main".to_string(),
+                return_type: Type::Builtin(BuiltinType::Int),
+                params: vec![Parameter {
+                    name: None,
+                    ty: Type::Builtin(BuiltinType::Void),
+                    location: None,
+                }],
+                body: Block {
+                    items: vec![
+                        BlockItem::Declaration(crate::ast::Declaration {
+                            declarators: vec![crate::ast::Declarator {
+                                name: "i".to_string(),
+                                ty: Type::Builtin(BuiltinType::Int),
+                                initializer: None,
+                            }],
+                        }),
+                        BlockItem::Statement(Statement::For {
+                            init: Some(Expression::Assignment {
+                                target: Box::new(Expression::Identifier {
+                                    name: "i".to_string(),
+                                    location: None,
+                                }),
+                                value: Box::new(Expression::IntegerLiteral {
+                                    value: 0,
+                                    location: None,
+                                }),
+                                location: None,
+                            }),
+                            condition: Some(Expression::Binary {
+                                op: crate::ast::BinaryOp::Less,
+                                lhs: Box::new(Expression::Identifier {
+                                    name: "i".to_string(),
+                                    location: None,
+                                }),
+                                rhs: Box::new(Expression::IntegerLiteral {
+                                    value: 10,
+                                    location: None,
+                                }),
+                                location: None,
+                            }),
+                            update: Some(Expression::Assignment {
+                                target: Box::new(Expression::Identifier {
+                                    name: "i".to_string(),
+                                    location: None,
+                                }),
+                                value: Box::new(Expression::Binary {
+                                    op: crate::ast::BinaryOp::Add,
+                                    lhs: Box::new(Expression::Identifier {
+                                        name: "i".to_string(),
+                                        location: None,
+                                    }),
+                                    rhs: Box::new(Expression::IntegerLiteral {
+                                        value: 1,
+                                        location: None,
+                                    }),
+                                    location: None,
+                                }),
+                                location: None,
+                            }),
+                            body: Box::new(Statement::Return(Some(Expression::IntegerLiteral {
+                                value: 0,
+                                location: None,
+                            }))),
+                        })],
+                },
+            })],
+        };
+
+        let output = MarieCodegen.emit(&unit).expect("codegen should succeed");
+        assert!(output.contains("for_cond_"));
+        assert!(output.contains("for_end_"));
+        assert!(output.contains("Jump for_cond_"));
+    }
+
+    /// Verifies for loop without condition generates infinite loop (jumps to cond).
+    #[test]
+    fn emits_for_without_condition() {
+        let unit = TranslationUnit {
+            top_level_items: vec![ExternalDeclaration::Function(FunctionDeclaration {
+                name: "main".to_string(),
+                return_type: Type::Builtin(BuiltinType::Int),
+                params: vec![Parameter {
+                    name: None,
+                    ty: Type::Builtin(BuiltinType::Void),
+                    location: None,
+                }],
+                body: Block {
+                    items: vec![BlockItem::Statement(Statement::For {
+                        init: None,
+                        condition: None,
+                        update: None,
+                        body: Box::new(Statement::Return(Some(Expression::IntegerLiteral {
+                            value: 1,
+                            location: None,
+                        }))),
+                    })],
+                },
+            })],
+        };
+
+        let output = MarieCodegen.emit(&unit).expect("codegen should succeed");
+        assert!(output.contains("for_cond_"));
+        assert!(output.contains("Jump for_cond_"));
+    }
+
+    /// Verifies nested for loops generate unique labels for each.
+    #[test]
+    fn emits_nested_for_loops() {
+        let unit = TranslationUnit {
+            top_level_items: vec![ExternalDeclaration::Function(FunctionDeclaration {
+                name: "main".to_string(),
+                return_type: Type::Builtin(BuiltinType::Int),
+                params: vec![Parameter {
+                    name: None,
+                    ty: Type::Builtin(BuiltinType::Void),
+                    location: None,
+                }],
+                body: Block {
+                    items: vec![
+                        BlockItem::Declaration(crate::ast::Declaration {
+                            declarators: vec![crate::ast::Declarator {
+                                name: "i".to_string(),
+                                ty: Type::Builtin(BuiltinType::Int),
+                                initializer: None,
+                            }],
+                        }),
+                        BlockItem::Declaration(crate::ast::Declaration {
+                            declarators: vec![crate::ast::Declarator {
+                                name: "j".to_string(),
+                                ty: Type::Builtin(BuiltinType::Int),
+                                initializer: None,
+                            }],
+                        }),
+                        BlockItem::Statement(Statement::For {
+                        init: Some(Expression::Assignment {
+                            target: Box::new(Expression::Identifier {
+                                name: "i".to_string(),
+                                location: None,
+                            }),
+                            value: Box::new(Expression::IntegerLiteral {
+                                value: 0,
+                                location: None,
+                            }),
+                            location: None,
+                        }),
+                        condition: Some(Expression::Binary {
+                            op: crate::ast::BinaryOp::Less,
+                            lhs: Box::new(Expression::Identifier {
+                                name: "i".to_string(),
+                                location: None,
+                            }),
+                            rhs: Box::new(Expression::IntegerLiteral {
+                                value: 3,
+                                location: None,
+                            }),
+                            location: None,
+                        }),
+                        update: Some(Expression::Assignment {
+                            target: Box::new(Expression::Identifier {
+                                name: "i".to_string(),
+                                location: None,
+                            }),
+                            value: Box::new(Expression::Binary {
+                                op: crate::ast::BinaryOp::Add,
+                                lhs: Box::new(Expression::Identifier {
+                                    name: "i".to_string(),
+                                    location: None,
+                                }),
+                                rhs: Box::new(Expression::IntegerLiteral {
+                                    value: 1,
+                                    location: None,
+                                }),
+                                location: None,
+                            }),
+                            location: None,
+                        }),
+                        body: Box::new(Statement::For {
+                            init: Some(Expression::Assignment {
+                                target: Box::new(Expression::Identifier {
+                                    name: "j".to_string(),
+                                    location: None,
+                                }),
+                                value: Box::new(Expression::IntegerLiteral {
+                                    value: 0,
+                                    location: None,
+                                }),
+                                location: None,
+                            }),
+                            condition: Some(Expression::Binary {
+                                op: crate::ast::BinaryOp::Less,
+                                lhs: Box::new(Expression::Identifier {
+                                    name: "j".to_string(),
+                                    location: None,
+                                }),
+                                rhs: Box::new(Expression::IntegerLiteral {
+                                    value: 2,
+                                    location: None,
+                                }),
+                                location: None,
+                            }),
+                            update: Some(Expression::Assignment {
+                                target: Box::new(Expression::Identifier {
+                                    name: "j".to_string(),
+                                    location: None,
+                                }),
+                                value: Box::new(Expression::Binary {
+                                    op: crate::ast::BinaryOp::Add,
+                                    lhs: Box::new(Expression::Identifier {
+                                        name: "j".to_string(),
+                                        location: None,
+                                    }),
+                                    rhs: Box::new(Expression::IntegerLiteral {
+                                        value: 1,
+                                        location: None,
+                                    }),
+                                    location: None,
+                                }),
+                                location: None,
+                            }),
+                            body: Box::new(Statement::Return(Some(Expression::IntegerLiteral {
+                                value: 0,
+                                location: None,
+                            }))),
+                        }),
+                    })],
+                },
+            })],
+        };
+
+        let output = MarieCodegen.emit(&unit).expect("codegen should succeed");
+        assert!(output.contains("for_cond_"));
+        assert!(output.contains("for_end_"));
     }
 }

@@ -3,7 +3,7 @@
  */
 
 int main() {
-    int x;
+    int x = 42;
     x = 42;
     return x;
 }

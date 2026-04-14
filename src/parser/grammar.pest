@@ -42,8 +42,14 @@ block_item = { declaration | statement }
 statement = {
     compound_statement
     | selection_statement
+    | iteration_statement
     | jump_statement
     | expression_statement
+}
+
+iteration_statement = {
+    kw_while ~ "(" ~ expression ~ ")" ~ statement
+    | kw_for ~ "(" ~ expression? ~ ";" ~ expression? ~ ";" ~ expression? ~ ")" ~ statement
 }
 
 expression_statement = { expression? ~ ";" }
@@ -64,13 +70,19 @@ assignment_expression = {
 }
 
 logical_or_expression = { logical_and_expression ~ (op_or ~ logical_and_expression)* }
-logical_and_expression = { equality_expression ~ (op_and ~ equality_expression)* }
+logical_and_expression = { bitwise_or_expression ~ (op_and ~ bitwise_or_expression)* }
+
+bitwise_or_expression = { bitwise_xor_expression ~ (op_bit_or ~ bitwise_xor_expression)* }
+bitwise_xor_expression = { bitwise_and_expression ~ (op_bit_xor ~ bitwise_and_expression)* }
+bitwise_and_expression = { equality_expression ~ (op_bit_and ~ equality_expression)* }
 
 equality_expression = { relational_expression ~ ((op_eq | op_ne) ~ relational_expression)* }
-relational_expression = { additive_expression ~ ((op_le | op_ge | "<" | ">") ~ additive_expression)* }
+relational_expression = { shift_expression ~ ((op_le | op_ge | "<" | ">") ~ shift_expression)* }
+
+shift_expression = { additive_expression ~ (("<<" | ">>") ~ additive_expression)* }
 
 additive_expression = { multiplicative_expression ~ (("+" | "-") ~ multiplicative_expression)* }
-multiplicative_expression = { unary_expression ~ (("*" | "%") ~ unary_expression)* }
+multiplicative_expression = { unary_expression ~ (("*" | "%" | "/") ~ unary_expression)* }
 
 unary_expression = {
     unary_operator ~ unary_expression
@@ -99,6 +111,8 @@ primary_expression = {
 
 kw_if = @{ "if" ~ !id_continue }
 kw_else = @{ "else" ~ !id_continue }
+kw_while = @{ "while" ~ !id_continue }
+kw_for = @{ "for" ~ !id_continue }
 kw_return = @{ "return" ~ !id_continue }
 kw_void = @{ "void" ~ !id_continue }
 kw_char = @{ "char" ~ !id_continue }
@@ -106,6 +120,9 @@ kw_int = @{ "int" ~ !id_continue }
 
 op_or = { "||" }
 op_and = { "&&" }
+op_bit_or = { "|" }
+op_bit_xor = { "^" }
+op_bit_and = { "&" }
 op_eq = { "==" }
 op_ne = { "!=" }
 op_le = { "<=" }
@@ -117,6 +134,8 @@ ident = @{ !keyword ~ id_start ~ id_continue* }
 keyword = {
     kw_if
     | kw_else
+    | kw_while
+    | kw_for
     | kw_return
     | kw_void
     | kw_char

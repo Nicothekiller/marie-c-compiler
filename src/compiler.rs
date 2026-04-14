@@ -1,4 +1,4 @@
-use crate::codegen::{Codegen, MarieCodegen};
+use crate::codegen::{Codegen, MarieCodegen, TargetValidation};
 use crate::error::CompilerError;
 use crate::parser::CParser;
 use crate::semantic::{SemanticAnalyzer, SemanticInfo};
@@ -11,7 +11,7 @@ pub struct Compiler<C: Codegen> {
 
 pub type DefaultCompiler = Compiler<MarieCodegen>;
 
-impl<C: Codegen> Compiler<C> {
+impl<C: Codegen + TargetValidation> Compiler<C> {
     /// Creates a compiler pipeline instance with an explicit backend.
     pub fn new_with_codegen(codegen: C) -> Self {
         Self {
@@ -25,6 +25,7 @@ impl<C: Codegen> Compiler<C> {
     pub fn compile_source(&self, source: &str) -> Result<String, CompilerError> {
         let ast = self.parser.parse_translation_unit(source)?;
         self.semantic.analyze(&ast)?;
+        self.codegen.validate(&ast)?;
         self.codegen.emit(&ast)
     }
 
@@ -34,6 +35,24 @@ impl<C: Codegen> Compiler<C> {
         let semantic_info = self.semantic.analyze(&ast)?;
 
         Ok(FrontendArtifacts { ast, semantic_info })
+    }
+}
+
+impl<C: Codegen> Compiler<C> {
+    /// Creates a compiler pipeline instance without target validation (for backends that don't implement TargetValidation).
+    pub fn new_with_codegen_no_validation(codegen: C) -> Self {
+        Self {
+            parser: CParser::new(),
+            semantic: SemanticAnalyzer::new(),
+            codegen,
+        }
+    }
+
+    /// Compiles without target validation.
+    pub fn compile_source_no_validation(&self, source: &str) -> Result<String, CompilerError> {
+        let ast = self.parser.parse_translation_unit(source)?;
+        self.semantic.analyze(&ast)?;
+        self.codegen.emit(&ast)
     }
 }
 
@@ -60,8 +79,8 @@ impl Default for DefaultCompiler {
 
 #[cfg(test)]
 mod tests {
-    use crate::ast::TranslationUnit;
-    use crate::codegen::{Codegen, MarieCodegen};
+    use crate::ast::{BinaryOp, TranslationUnit};
+    use crate::codegen::{Codegen, MarieCodegen, TargetValidation};
     use crate::error::CompilerError;
 
     use super::{Compiler, DefaultCompiler};
@@ -72,6 +91,12 @@ mod tests {
     impl Codegen for TestCodegen {
         fn emit(&self, _ast: &TranslationUnit) -> Result<String, CompilerError> {
             Ok("TEST_BACKEND_OUTPUT".to_string())
+        }
+    }
+
+    impl TargetValidation for TestCodegen {
+        fn unsupported_binary_ops(&self) -> &'static [BinaryOp] {
+            &[]
         }
     }
 
@@ -95,12 +120,10 @@ mod tests {
             .expect("frontend should succeed");
 
         assert_eq!(artifacts.ast.top_level_items.len(), 1);
-        assert!(
-            artifacts
-                .semantic_info
-                .function_signatures
-                .contains_key("main")
-        );
+        assert!(artifacts
+            .semantic_info
+            .function_signatures
+            .contains_key("main"));
     }
 
     /// Verifies compiler can use an injected non-Marie backend.
