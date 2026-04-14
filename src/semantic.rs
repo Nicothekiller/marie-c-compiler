@@ -1101,6 +1101,15 @@ mod tests {
         );
     }
 
+    /// Verifies pointer - pointer yields an integer-like result and is accepted.
+    #[test]
+    fn accepts_pointer_subtraction_pointer_pointer() {
+        let result = analyze_source(
+            "int main(void) { int arr[4]; int *p; int *q; p = arr; q = p + 2; return q - p; }",
+        );
+        assert!(result.is_ok(), "pointer - pointer should be accepted");
+    }
+
     /// Verifies call arguments reject strict type mismatches.
     #[test]
     fn rejects_call_argument_type_mismatch() {
