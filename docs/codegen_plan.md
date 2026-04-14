@@ -1,4 +1,4 @@
-# Marie Codegen Plan (v0)
+# Marie Codegen Plan (0.1.0)
 
 ## Goal
 Implement a deterministic backend that lowers the semantically validated AST into MARIE `.mas` assembly.
@@ -54,7 +54,7 @@ Compiler emits unique internal labels for all symbols/temporaries:
 - control-flow: `if_<n>_then/else/end`, `loop_<n>_*`
 
 ### Inline asm compatibility
-Inline asm (v2) should reference source symbols through placeholders (planned):
+Inline asm (0.3.0) should reference source symbols through placeholders (planned):
 - `%name` for in-scope source name
 - compiler resolves placeholders to internal labels pre-emit
 
@@ -98,7 +98,7 @@ Order of implementation:
 
 Condition branch pattern should use `Skipcond` + `Jump` sequences consistently.
 
-## MARIE Instruction Usage (v0)
+## MARIE Instruction Usage (0.1.0)
 
 Primary instructions expected in generated code:
 - `Load`, `Store`
@@ -152,10 +152,10 @@ Helpers are emitted only when referenced.
 - Arrays/pointers in codegen path
 - helper cleanup and output polish
 
-### Phase D (future v2 prep)
+### Phase D (future 0.3.0 prep)
 - inline asm placeholder resolution pipeline
 
-## Non-Goals (v0 backend)
+## Non-Goals (0.1.0 backend)
 - Recursion support
 - dynamic stack frame simulation
 - optimization passes

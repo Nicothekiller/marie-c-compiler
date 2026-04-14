@@ -1,15 +1,15 @@
-# Semantic Rules (v0)
+# Semantic Rules (0.1.0)
 
 This document defines what the compiler currently allows and rejects at semantic-analysis time.
 
 The intent is to keep behavior deterministic while the project is still in early stages.
 
 ## Scope
-- Applies to semantic analysis of the v0 language subset.
+- Applies to semantic analysis of the 0.1.0 language subset.
 - Parser-level acceptance does not automatically imply semantic validity.
 - Input is assumed to be preprocessed C.
 
-## Type System (v0)
+## Type System (0.1.0)
 
 ### Allowed types
 - `int`
@@ -51,7 +51,7 @@ The intent is to keep behavior deterministic while the project is still in early
 - `return;` in non-`void` functions.
 - `return expr;` in `void` functions.
 - Unsupported statement families (until explicitly added):
-  - `for`, `while` (planned v1), `do`, `switch`
+  - `for`, `while` (planned 0.2.0), `do`, `switch`
   - `break`, `continue`
   - `goto`, labels
 
@@ -65,7 +65,7 @@ The intent is to keep behavior deterministic while the project is still in early
 - `rhs` must be assignable to `lhs` type.
 - Assignment expression type is the `lhs` type.
 
-### Lvalues (v0)
+### Lvalues (0.1.0)
 - Allowed:
   - identifier
   - dereference (`*ptr`)
@@ -85,7 +85,7 @@ The intent is to keep behavior deterministic while the project is still in early
 - Arithmetic `+ - * %`:
   - Allowed on integer-like operands (`int`, `char`).
 - Relational `< <= > >=`:
-  - Allowed on integer-like operands in v0.
+  - Allowed on integer-like operands in 0.1.0.
 - Equality `== !=`:
   - Allowed on integer-like operands.
   - Allowed on compatible pointer operands.
@@ -103,12 +103,12 @@ The intent is to keep behavior deterministic while the project is still in early
 - Index must be integer-like.
 - Result type is element type.
 
-## Assignability and Conversions (v0)
+## Assignability and Conversions (0.1.0)
 
 ### Allowed
 - Exact same type.
 - `char -> int`.
-- `int -> char` (lossy behavior allowed in v0).
+- `int -> char` (lossy behavior allowed in 0.1.0).
 - Null literal `0` to pointer.
 
 ### Rejected
@@ -117,7 +117,7 @@ The intent is to keep behavior deterministic while the project is still in early
 - Non-pointer to pointer conversion (except null literal).
 - Function type as runtime value.
 
-## Explicitly Unsupported Features (v0)
+- ## Explicitly Unsupported Features (0.1.0)
 - Division operator `/`.
 - Bitwise operators `&` (binary), `|`, `^`.
 - Shift operators `<<`, `>>`.
@@ -133,5 +133,5 @@ The intent is to keep behavior deterministic while the project is still in early
 - Prefer stable, actionable wording.
 
 ## Version Notes
-- `while` loops are planned for v1 semantic support.
-- Inline asm extension is planned for v2.
+- `while` loops are planned for 0.2.0 semantic support.
+- Inline asm extension is planned for 0.3.0.

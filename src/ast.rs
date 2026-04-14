@@ -91,7 +91,7 @@ pub enum BlockItem {
     Statement(Statement),
 }
 
-/// Statement forms currently planned for v0/v1.
+/// Statement forms currently planned for 0.1.0/0.2.0.
 #[derive(Debug, Clone)]
 pub enum Statement {
     Block(Block),

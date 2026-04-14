@@ -1,5 +1,5 @@
-use pest::Parser;
 use pest::iterators::Pair;
+use pest::Parser;
 use pest_derive::Parser;
 
 use crate::ast::{
@@ -1252,14 +1252,14 @@ mod tests {
         assert_parse_fails("int main(void) { return a >> 2; }");
     }
 
-    /// Verifies loop statements outside v0 remain rejected.
+    /// Verifies loop statements outside 0.1.0 remain rejected.
     #[test]
-    fn rejects_non_v0_loop_statements() {
+    fn rejects_non_0_1_0_loop_statements() {
         assert_parse_fails("int main(void) { while (1) return 0; }");
         assert_parse_fails("int main(void) { for (;;) return 0; }");
     }
 
-    /// Verifies `static` storage class is not accepted in v0 grammar.
+    /// Verifies `static` storage class is not accepted in 0.1.0 grammar.
     #[test]
     fn rejects_static_storage_class() {
         assert_parse_fails("static int counter;");

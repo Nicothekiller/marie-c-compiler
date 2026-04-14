@@ -19,7 +19,7 @@ Scope: entire repository unless overridden by nested `AGENTS.md` files.
 - `src/compiler.rs`: pipeline coordinator
 - `src/codegen.rs`: Marie output emitter
 - `src/error.rs`: shared compiler error types
-- `docs/parser_plan.md`: parser v0/v1/v2 roadmap
+ - `docs/parser_plan.md`: parser 0.1.0/0.2.0/0.3.0 roadmap
 
 ## High-Level Pipeline
 - Parse source text into parse tree
@@ -52,17 +52,17 @@ Scope: entire repository unless overridden by nested `AGENTS.md` files.
 ## Parser Guidelines (Pest)
 - Grammar should reflect reduced C subset, not full ANSI C
 - Keep operator precedence explicit in grammar rules
-- Reserve unsupported features for v1 diagnostics
+ - Reserve unsupported features for 0.2.0 diagnostics
 - Prefer deterministic grammar over overly clever rules
 - Keep keyword matching safe against identifier collisions
 - Maintain whitespace and comment handling rules
 
 ## AST Guidelines
 - Model language features with explicit node variants
-- Keep v0 AST aligned with `docs/parser_plan.md`
+ - Keep 0.1.0 AST aligned with `docs/parser_plan.md`
 - Separate declarations, statements, and expressions cleanly
 - Encode operators as enums instead of raw strings
-- Preserve room for v1/v2 expansion without breaking names
+ - Preserve room for 0.2.0/0.3.0 expansion without breaking names
 
 ## Codegen Guidelines
 - Output target extension: `.mas`
@@ -75,7 +75,7 @@ Scope: entire repository unless overridden by nested `AGENTS.md` files.
 - Division `/` is excluded from current subset
 - Bitwise/shift operators are excluded for now
 - `goto` is deferred and may remain optional
-- Inline asm is planned as a v2 statement-level extension
+ - Inline asm is planned as a 0.3.0 statement-level extension
 
 ## CLI Guidelines
 - Use `clap` for argument parsing
