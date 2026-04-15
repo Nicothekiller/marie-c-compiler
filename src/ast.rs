@@ -66,7 +66,13 @@ pub struct Declarator {
 /// Declaration statement/declaration-list node.
 #[derive(Debug, Clone, Default)]
 pub struct Declaration {
+    pub storage_class: Option<StorageClass>,
     pub declarators: Vec<Declarator>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StorageClass {
+    Static,
 }
 
 /// Function definition node.

@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 
-use crate::ast::{BinaryOp, Block, BlockItem, Expression, ExternalDeclaration, Statement, TranslationUnit, Type};
+use crate::ast::{
+    BinaryOp, Block, BlockItem, Expression, ExternalDeclaration, Statement, TranslationUnit, Type,
+};
 use crate::error::CompilerError;
 
 /// Backend interface for emitting target assembly from AST.
@@ -25,17 +27,33 @@ pub trait TargetValidation {
     fn unsupported_statement_kinds(&self) -> &'static [fn() -> Statement] {
         &[]
     }
+
+    /// Checks for unsupported storage classes in declarations.
+    fn unsupported_storage_classes(&self) -> &'static [fn() -> crate::ast::StorageClass] {
+        &[|| crate::ast::StorageClass::Static]
+    }
 }
 
 fn validate_ast(
     ast: &TranslationUnit,
     unsupported_ops: &[BinaryOp],
     _unsupported_stmts: &[fn() -> Statement],
+    unsupported_storage: &[fn() -> crate::ast::StorageClass],
 ) -> Result<(), CompilerError> {
     for item in &ast.top_level_items {
         match item {
             ExternalDeclaration::Function(f) => validate_block(&f.body, unsupported_ops)?,
             ExternalDeclaration::GlobalDeclaration(d) => {
+                if let Some(sc) = &d.storage_class {
+                    for unsupported in unsupported_storage {
+                        if *sc == unsupported() {
+                            return Err(CompilerError::unsupported_at(
+                                "static storage class not supported by target",
+                                crate::error::SourceLocation { line: 1, column: 1 },
+                            ));
+                        }
+                    }
+                }
                 for decl in &d.declarators {
                     if let Some(init) = &decl.initializer {
                         validate_expression(init, unsupported_ops)?;
@@ -66,7 +84,11 @@ fn validate_block(block: &Block, unsupported_ops: &[BinaryOp]) -> Result<(), Com
 fn validate_statement(stmt: &Statement, unsupported_ops: &[BinaryOp]) -> Result<(), CompilerError> {
     match stmt {
         Statement::Block(b) => validate_block(b, unsupported_ops)?,
-        Statement::If { condition, then_branch, else_branch } => {
+        Statement::If {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
             validate_expression(condition, unsupported_ops)?;
             validate_statement(then_branch, unsupported_ops)?;
             if let Some(else_b) = else_branch {
@@ -77,7 +99,12 @@ fn validate_statement(stmt: &Statement, unsupported_ops: &[BinaryOp]) -> Result<
             validate_expression(condition, unsupported_ops)?;
             validate_statement(body, unsupported_ops)?;
         }
-        Statement::For { init, condition, update, body } => {
+        Statement::For {
+            init,
+            condition,
+            update,
+            body,
+        } => {
             if let Some(i) = init {
                 validate_expression(i, unsupported_ops)?;
             }
@@ -103,9 +130,17 @@ fn validate_statement(stmt: &Statement, unsupported_ops: &[BinaryOp]) -> Result<
     Ok(())
 }
 
-fn validate_expression(expr: &Expression, unsupported_ops: &[BinaryOp]) -> Result<(), CompilerError> {
+fn validate_expression(
+    expr: &Expression,
+    unsupported_ops: &[BinaryOp],
+) -> Result<(), CompilerError> {
     match expr {
-        Expression::Binary { op, lhs, rhs, location } => {
+        Expression::Binary {
+            op,
+            lhs,
+            rhs,
+            location,
+        } => {
             if unsupported_ops.contains(op) {
                 return Err(CompilerError::unsupported_with_location(
                     format!("operator {:?} not supported by target", op),
@@ -160,7 +195,12 @@ impl TargetValidation for MarieCodegen {
     }
 
     fn validate(&self, ast: &TranslationUnit) -> Result<(), CompilerError> {
-        validate_ast(ast, self.unsupported_binary_ops(), self.unsupported_statement_kinds())
+        validate_ast(
+            ast,
+            self.unsupported_binary_ops(),
+            self.unsupported_statement_kinds(),
+            self.unsupported_storage_classes(),
+        )
     }
 }
 
@@ -422,8 +462,7 @@ impl MarieEmitter {
                 let end_label = format!("while_end_{}", loop_id);
 
                 self.push_instructions([format!("Jump {}", cond_label)]);
-                self.instructions
-                    .push(format!("{}, Clear", cond_label));
+                self.instructions.push(format!("{}, Clear", cond_label));
                 self.emit_expression(condition, context)?;
                 self.push_instructions([
                     "Skipcond 0C00".to_string(),
@@ -431,11 +470,15 @@ impl MarieEmitter {
                 ]);
                 self.emit_statement(body, context)?;
                 self.push_instructions([format!("Jump {}", cond_label)]);
-                self.instructions
-                    .push(format!("{}, Clear", end_label));
+                self.instructions.push(format!("{}, Clear", end_label));
                 Ok(())
             }
-            Statement::For { init, condition, update, body } => {
+            Statement::For {
+                init,
+                condition,
+                update,
+                body,
+            } => {
                 let loop_id = self.next_label_id();
                 let cond_label = format!("for_cond_{}", loop_id);
                 let end_label = format!("for_end_{}", loop_id);
@@ -445,8 +488,7 @@ impl MarieEmitter {
                 }
                 if let Some(cond) = condition {
                     self.push_instructions([format!("Jump {}", cond_label)]);
-                    self.instructions
-                        .push(format!("{}, Clear", cond_label));
+                    self.instructions.push(format!("{}, Clear", cond_label));
                     self.emit_expression(cond, context)?;
                     self.push_instructions([
                         "Skipcond 0C00".to_string(),
@@ -454,16 +496,14 @@ impl MarieEmitter {
                     ]);
                 } else {
                     self.push_instructions([format!("Jump {}", cond_label)]);
-                    self.instructions
-                        .push(format!("{}, Clear", cond_label));
+                    self.instructions.push(format!("{}, Clear", cond_label));
                 }
                 self.emit_statement(body, context)?;
                 if let Some(upd) = update {
                     self.emit_expression(upd, context)?;
                 }
                 self.push_instructions([format!("Jump {}", cond_label)]);
-                self.instructions
-                    .push(format!("{}, Clear", end_label));
+                self.instructions.push(format!("{}, Clear", end_label));
                 Ok(())
             }
         }
@@ -558,8 +598,12 @@ impl MarieEmitter {
                     BinaryOp::LogicalOr => self.emit_logical_or(&lhs_temp, &rhs_temp),
                     BinaryOp::Multiply => self.emit_mul_call(&lhs_temp, &rhs_temp),
                     BinaryOp::Modulo => self.emit_mod_call(&lhs_temp, &rhs_temp),
-                    BinaryOp::Divide | BinaryOp::ShiftLeft | BinaryOp::ShiftRight
-                    | BinaryOp::BitwiseAnd | BinaryOp::BitwiseOr | BinaryOp::BitwiseXor => {
+                    BinaryOp::Divide
+                    | BinaryOp::ShiftLeft
+                    | BinaryOp::ShiftRight
+                    | BinaryOp::BitwiseAnd
+                    | BinaryOp::BitwiseOr
+                    | BinaryOp::BitwiseXor => {
                         return Err(CompilerError::unsupported(format!(
                             "binary operator {:?} not supported by target",
                             op
@@ -1155,6 +1199,7 @@ mod tests {
                 body: Block {
                     items: vec![
                         BlockItem::Declaration(crate::ast::Declaration {
+                            storage_class: None,
                             declarators: vec![crate::ast::Declarator {
                                 name: "a".to_string(),
                                 ty: Type::Builtin(BuiltinType::Int),
@@ -1162,6 +1207,7 @@ mod tests {
                             }],
                         }),
                         BlockItem::Declaration(crate::ast::Declaration {
+                            storage_class: None,
                             declarators: vec![crate::ast::Declarator {
                                 name: "b".to_string(),
                                 ty: Type::Builtin(BuiltinType::Int),
@@ -1234,6 +1280,7 @@ mod tests {
                 body: Block {
                     items: vec![
                         BlockItem::Declaration(crate::ast::Declaration {
+                            storage_class: None,
                             declarators: vec![crate::ast::Declarator {
                                 name: "x".to_string(),
                                 ty: Type::Builtin(BuiltinType::Int),
@@ -1244,6 +1291,7 @@ mod tests {
                             }],
                         }),
                         BlockItem::Declaration(crate::ast::Declaration {
+                            storage_class: None,
                             declarators: vec![crate::ast::Declarator {
                                 name: "ptr".to_string(),
                                 ty: Type::Pointer(Box::new(Type::Builtin(BuiltinType::Int))),
@@ -1292,6 +1340,7 @@ mod tests {
                 body: Block {
                     items: vec![
                         BlockItem::Declaration(crate::ast::Declaration {
+                            storage_class: None,
                             declarators: vec![crate::ast::Declarator {
                                 name: "arr".to_string(),
                                 ty: Type::Array {
@@ -1302,6 +1351,7 @@ mod tests {
                             }],
                         }),
                         BlockItem::Declaration(crate::ast::Declaration {
+                            storage_class: None,
                             declarators: vec![crate::ast::Declarator {
                                 name: "x".to_string(),
                                 ty: Type::Builtin(BuiltinType::Int),
@@ -1378,6 +1428,7 @@ mod tests {
         let unit = TranslationUnit {
             top_level_items: vec![
                 ExternalDeclaration::GlobalDeclaration(crate::ast::Declaration {
+                    storage_class: None,
                     declarators: vec![crate::ast::Declarator {
                         name: "garr".to_string(),
                         ty: Type::Array {
@@ -1421,6 +1472,7 @@ mod tests {
     fn emits_pointer_add_and_deref() {
         // Build a unit where a local pointer p is initialized to &arr and we return *(p + 1)
         let decl_arr = crate::ast::Declaration {
+            storage_class: None,
             declarators: vec![crate::ast::Declarator {
                 name: "arr".to_string(),
                 ty: Type::Array {
@@ -1432,6 +1484,7 @@ mod tests {
         };
 
         let decl_p = crate::ast::Declaration {
+            storage_class: None,
             declarators: vec![crate::ast::Declarator {
                 name: "p".to_string(),
                 ty: Type::Pointer(Box::new(Type::Builtin(BuiltinType::Int))),
@@ -1494,6 +1547,7 @@ mod tests {
     fn emits_pointer_subtraction_pattern() {
         // Build a unit performing q = p + 2; return q - p;
         let decl_arr = crate::ast::Declaration {
+            storage_class: None,
             declarators: vec![crate::ast::Declarator {
                 name: "arr".to_string(),
                 ty: Type::Array {
@@ -1505,6 +1559,7 @@ mod tests {
         };
 
         let decl_p = crate::ast::Declaration {
+            storage_class: None,
             declarators: vec![crate::ast::Declarator {
                 name: "p".to_string(),
                 ty: Type::Pointer(Box::new(Type::Builtin(BuiltinType::Int))),
@@ -1520,6 +1575,7 @@ mod tests {
         };
 
         let decl_q = crate::ast::Declaration {
+            storage_class: None,
             declarators: vec![crate::ast::Declarator {
                 name: "q".to_string(),
                 ty: Type::Pointer(Box::new(Type::Builtin(BuiltinType::Int))),
@@ -1582,6 +1638,7 @@ mod tests {
         // Reuse the earlier build for p + 1 then deref and assert the Add tmp occurs before storing
         // into helper_addr and the LoadI helper_addr follows.
         let decl_arr = crate::ast::Declaration {
+            storage_class: None,
             declarators: vec![crate::ast::Declarator {
                 name: "arr".to_string(),
                 ty: Type::Array {
@@ -1593,6 +1650,7 @@ mod tests {
         };
 
         let decl_p = crate::ast::Declaration {
+            storage_class: None,
             declarators: vec![crate::ast::Declarator {
                 name: "p".to_string(),
                 ty: Type::Pointer(Box::new(Type::Builtin(BuiltinType::Int))),
@@ -1680,6 +1738,7 @@ mod tests {
     fn emits_pointer_subtract_exact_sequence() {
         // Build unit q = p + 2; return q - p; ensure subtraction occurs as Subt tmp_
         let decl_arr = crate::ast::Declaration {
+            storage_class: None,
             declarators: vec![crate::ast::Declarator {
                 name: "arr".to_string(),
                 ty: Type::Array {
@@ -1691,6 +1750,7 @@ mod tests {
         };
 
         let decl_p = crate::ast::Declaration {
+            storage_class: None,
             declarators: vec![crate::ast::Declarator {
                 name: "p".to_string(),
                 ty: Type::Pointer(Box::new(Type::Builtin(BuiltinType::Int))),
@@ -1706,6 +1766,7 @@ mod tests {
         };
 
         let decl_q = crate::ast::Declaration {
+            storage_class: None,
             declarators: vec![crate::ast::Declarator {
                 name: "q".to_string(),
                 ty: Type::Pointer(Box::new(Type::Builtin(BuiltinType::Int))),
@@ -1801,7 +1862,10 @@ mod tests {
                 }],
                 body: Block {
                     items: vec![BlockItem::Statement(Statement::While {
-                        condition: Expression::IntegerLiteral { value: 1, location: None },
+                        condition: Expression::IntegerLiteral {
+                            value: 1,
+                            location: None,
+                        },
                         body: Box::new(Statement::Return(Some(Expression::IntegerLiteral {
                             value: 42,
                             location: None,
@@ -1832,6 +1896,7 @@ mod tests {
                 body: Block {
                     items: vec![
                         BlockItem::Declaration(crate::ast::Declaration {
+                            storage_class: None,
                             declarators: vec![crate::ast::Declarator {
                                 name: "x".to_string(),
                                 ty: Type::Builtin(BuiltinType::Int),
@@ -1901,6 +1966,7 @@ mod tests {
                 body: Block {
                     items: vec![
                         BlockItem::Declaration(crate::ast::Declaration {
+                            storage_class: None,
                             declarators: vec![crate::ast::Declarator {
                                 name: "i".to_string(),
                                 ty: Type::Builtin(BuiltinType::Int),
@@ -1954,7 +2020,8 @@ mod tests {
                                 value: 0,
                                 location: None,
                             }))),
-                        })],
+                        }),
+                    ],
                 },
             })],
         };
@@ -2011,6 +2078,7 @@ mod tests {
                 body: Block {
                     items: vec![
                         BlockItem::Declaration(crate::ast::Declaration {
+                            storage_class: None,
                             declarators: vec![crate::ast::Declarator {
                                 name: "i".to_string(),
                                 ty: Type::Builtin(BuiltinType::Int),
@@ -2018,6 +2086,7 @@ mod tests {
                             }],
                         }),
                         BlockItem::Declaration(crate::ast::Declaration {
+                            storage_class: None,
                             declarators: vec![crate::ast::Declarator {
                                 name: "j".to_string(),
                                 ty: Type::Builtin(BuiltinType::Int),
@@ -2025,52 +2094,9 @@ mod tests {
                             }],
                         }),
                         BlockItem::Statement(Statement::For {
-                        init: Some(Expression::Assignment {
-                            target: Box::new(Expression::Identifier {
-                                name: "i".to_string(),
-                                location: None,
-                            }),
-                            value: Box::new(Expression::IntegerLiteral {
-                                value: 0,
-                                location: None,
-                            }),
-                            location: None,
-                        }),
-                        condition: Some(Expression::Binary {
-                            op: crate::ast::BinaryOp::Less,
-                            lhs: Box::new(Expression::Identifier {
-                                name: "i".to_string(),
-                                location: None,
-                            }),
-                            rhs: Box::new(Expression::IntegerLiteral {
-                                value: 3,
-                                location: None,
-                            }),
-                            location: None,
-                        }),
-                        update: Some(Expression::Assignment {
-                            target: Box::new(Expression::Identifier {
-                                name: "i".to_string(),
-                                location: None,
-                            }),
-                            value: Box::new(Expression::Binary {
-                                op: crate::ast::BinaryOp::Add,
-                                lhs: Box::new(Expression::Identifier {
-                                    name: "i".to_string(),
-                                    location: None,
-                                }),
-                                rhs: Box::new(Expression::IntegerLiteral {
-                                    value: 1,
-                                    location: None,
-                                }),
-                                location: None,
-                            }),
-                            location: None,
-                        }),
-                        body: Box::new(Statement::For {
                             init: Some(Expression::Assignment {
                                 target: Box::new(Expression::Identifier {
-                                    name: "j".to_string(),
+                                    name: "i".to_string(),
                                     location: None,
                                 }),
                                 value: Box::new(Expression::IntegerLiteral {
@@ -2082,24 +2108,24 @@ mod tests {
                             condition: Some(Expression::Binary {
                                 op: crate::ast::BinaryOp::Less,
                                 lhs: Box::new(Expression::Identifier {
-                                    name: "j".to_string(),
+                                    name: "i".to_string(),
                                     location: None,
                                 }),
                                 rhs: Box::new(Expression::IntegerLiteral {
-                                    value: 2,
+                                    value: 3,
                                     location: None,
                                 }),
                                 location: None,
                             }),
                             update: Some(Expression::Assignment {
                                 target: Box::new(Expression::Identifier {
-                                    name: "j".to_string(),
+                                    name: "i".to_string(),
                                     location: None,
                                 }),
                                 value: Box::new(Expression::Binary {
                                     op: crate::ast::BinaryOp::Add,
                                     lhs: Box::new(Expression::Identifier {
-                                        name: "j".to_string(),
+                                        name: "i".to_string(),
                                         location: None,
                                     }),
                                     rhs: Box::new(Expression::IntegerLiteral {
@@ -2110,12 +2136,58 @@ mod tests {
                                 }),
                                 location: None,
                             }),
-                            body: Box::new(Statement::Return(Some(Expression::IntegerLiteral {
-                                value: 0,
-                                location: None,
-                            }))),
+                            body: Box::new(Statement::For {
+                                init: Some(Expression::Assignment {
+                                    target: Box::new(Expression::Identifier {
+                                        name: "j".to_string(),
+                                        location: None,
+                                    }),
+                                    value: Box::new(Expression::IntegerLiteral {
+                                        value: 0,
+                                        location: None,
+                                    }),
+                                    location: None,
+                                }),
+                                condition: Some(Expression::Binary {
+                                    op: crate::ast::BinaryOp::Less,
+                                    lhs: Box::new(Expression::Identifier {
+                                        name: "j".to_string(),
+                                        location: None,
+                                    }),
+                                    rhs: Box::new(Expression::IntegerLiteral {
+                                        value: 2,
+                                        location: None,
+                                    }),
+                                    location: None,
+                                }),
+                                update: Some(Expression::Assignment {
+                                    target: Box::new(Expression::Identifier {
+                                        name: "j".to_string(),
+                                        location: None,
+                                    }),
+                                    value: Box::new(Expression::Binary {
+                                        op: crate::ast::BinaryOp::Add,
+                                        lhs: Box::new(Expression::Identifier {
+                                            name: "j".to_string(),
+                                            location: None,
+                                        }),
+                                        rhs: Box::new(Expression::IntegerLiteral {
+                                            value: 1,
+                                            location: None,
+                                        }),
+                                        location: None,
+                                    }),
+                                    location: None,
+                                }),
+                                body: Box::new(Statement::Return(Some(
+                                    Expression::IntegerLiteral {
+                                        value: 0,
+                                        location: None,
+                                    },
+                                ))),
+                            }),
                         }),
-                    })],
+                    ],
                 },
             })],
         };

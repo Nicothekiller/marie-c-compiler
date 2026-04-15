@@ -810,6 +810,7 @@ mod tests {
         let unit = TranslationUnit {
             top_level_items: vec![
                 ExternalDeclaration::GlobalDeclaration(Declaration {
+                    storage_class: None,
                     declarators: vec![Declarator {
                         name: "counter".to_string(),
                         ty: Type::Builtin(BuiltinType::Int),
@@ -844,6 +845,7 @@ mod tests {
         let unit = TranslationUnit {
             top_level_items: vec![
                 ExternalDeclaration::GlobalDeclaration(Declaration {
+                    storage_class: None,
                     declarators: vec![Declarator {
                         name: "dup".to_string(),
                         ty: Type::Builtin(BuiltinType::Int),
@@ -851,6 +853,7 @@ mod tests {
                     }],
                 }),
                 ExternalDeclaration::GlobalDeclaration(Declaration {
+                    storage_class: None,
                     declarators: vec![Declarator {
                         name: "dup".to_string(),
                         ty: Type::Builtin(BuiltinType::Char),

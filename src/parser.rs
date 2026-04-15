@@ -1,10 +1,11 @@
-use pest::iterators::Pair;
 use pest::Parser;
+use pest::iterators::Pair;
 use pest_derive::Parser;
 
 use crate::ast::{
     BinaryOp, Block, BlockItem, BuiltinType, ConstExpr, Declaration, Declarator, Expression,
-    ExternalDeclaration, FunctionDeclaration, Parameter, Statement, TranslationUnit, Type, UnaryOp,
+    ExternalDeclaration, FunctionDeclaration, Parameter, Statement, StorageClass, TranslationUnit,
+    Type, UnaryOp,
 };
 use crate::error::{CompilerError, SourceLocation};
 
@@ -92,7 +93,7 @@ fn parse_function_definition(
             "missing function type specifier".to_string(),
         ));
     };
-    let return_type = parse_declaration_specifiers(specifier_pair)?;
+    let (_static, return_type) = parse_declaration_specifiers(specifier_pair)?;
 
     let Some(declarator_pair) = inner.next() else {
         return Err(CompilerError::parse(
@@ -133,7 +134,7 @@ fn parse_declaration(source: &str, pair: Pair<'_, Rule>) -> Result<Declaration, 
     let Some(specifier_pair) = inner.next() else {
         return Ok(Declaration::default());
     };
-    let base_type = parse_declaration_specifiers(specifier_pair)?;
+    let (storage_class, base_type) = parse_declaration_specifiers(specifier_pair)?;
 
     let mut declarators = Vec::new();
     for item in inner {
@@ -155,18 +156,45 @@ fn parse_declaration(source: &str, pair: Pair<'_, Rule>) -> Result<Declaration, 
         }
     }
 
-    Ok(Declaration { declarators })
+    Ok(Declaration {
+        storage_class,
+        declarators,
+    })
 }
 
-/// Extracts the base type from declaration specifiers.
-fn parse_declaration_specifiers(pair: Pair<'_, Rule>) -> Result<Type, CompilerError> {
+/// Extracts storage class and base type from declaration specifiers.
+fn parse_declaration_specifiers(
+    pair: Pair<'_, Rule>,
+) -> Result<(Option<StorageClass>, Type), CompilerError> {
+    let mut storage_class = None;
+    let mut base_type = None;
+
     for item in pair.into_inner() {
-        if item.as_rule() == Rule::type_specifier {
-            return parse_type_specifier(item);
+        match item.as_rule() {
+            Rule::storage_class_specifier => {
+                storage_class = Some(parse_storage_class_specifier(item)?);
+            }
+            Rule::type_specifier => {
+                base_type = Some(parse_type_specifier(item)?);
+            }
+            _ => {}
         }
     }
 
-    Err(CompilerError::parse("missing type specifier".to_string()))
+    let base_type =
+        base_type.ok_or_else(|| CompilerError::parse("missing type specifier".to_string()))?;
+
+    Ok((storage_class, base_type))
+}
+
+fn parse_storage_class_specifier(pair: Pair<'_, Rule>) -> Result<StorageClass, CompilerError> {
+    let inner = pair.into_inner().next();
+    if let Some(p) = inner
+        && p.as_rule() == Rule::kw_static
+    {
+        return Ok(StorageClass::Static);
+    }
+    Err(CompilerError::parse("unknown storage class".to_string()))
 }
 
 /// Maps a parsed type-specifier rule to an AST `Type`.
@@ -326,7 +354,7 @@ fn parse_parameter_list(
             return Err(CompilerError::parse("missing parameter type".to_string()));
         };
         let specifier_location = pair_location(&specifier_pair);
-        let base_type = parse_declaration_specifiers(specifier_pair)?;
+        let (_static, base_type) = parse_declaration_specifiers(specifier_pair)?;
 
         let parameter = if let Some(declarator_pair) = inner.next() {
             let declarator_location = pair_location(&declarator_pair);
@@ -456,7 +484,7 @@ fn parse_iteration_statement(
             .cloned()
             .collect();
 
-        let init = if expressions.len() >= 1 {
+        let init = if !expressions.is_empty() {
             Some(parse_expression(source, expressions[0].clone())?)
         } else {
             None
@@ -1398,24 +1426,63 @@ mod tests {
 
     /// Verifies division operator is accepted by parser (rejected by target validation).
     #[test]
-    fn accepts_division_operator() {
-        let result = CParser::new().parse_translation_unit("int main(void) { return 10 / 2; }");
-        assert!(result.is_ok(), "parser should accept division");
+    fn parses_division_operator() {
+        assert_parse_succeeds("int main(void) { return 10 / 2; }");
     }
 
-    /// Verifies bitwise operators are now supported (caught by target validation).
+    /// Verifies division with variables parse.
     #[test]
-    fn rejects_bitwise_operators() {
+    fn parses_division_variables() {
+        assert_parse_succeeds("int main(void) { return a / b; }");
+    }
+
+    /// Verifies division with expressions parse.
+    #[test]
+    fn parses_division_expressions() {
+        assert_parse_succeeds("int main(void) { return (a + b) / c; }");
+    }
+
+    /// Verifies bitwise operators parse (caught by target validation).
+    #[test]
+    fn parses_bitwise_operators() {
         assert_parse_succeeds("int main(void) { return a & b; }");
         assert_parse_succeeds("int main(void) { return a | b; }");
         assert_parse_succeeds("int main(void) { return a ^ b; }");
     }
 
-    /// Verifies shift operators are now supported (caught by target validation).
+    /// Verifies bitwise operators with compound expressions parse.
     #[test]
-    fn rejects_shift_operators() {
+    fn parses_bitwise_operators_compound() {
+        assert_parse_succeeds("int main(void) { return (a & b) | c; }");
+        assert_parse_succeeds("int main(void) { return a ^ (b & c); }");
+    }
+
+    /// Verifies bitwise operators with other operators parse.
+    #[test]
+    fn parses_bitwise_operators_mixed() {
+        assert_parse_succeeds("int main(void) { return a + b & c; }");
+        assert_parse_succeeds("int main(void) { return a | b == c; }");
+    }
+
+    /// Verifies shift operators parse (caught by target validation).
+    #[test]
+    fn parses_shift_operators() {
         assert_parse_succeeds("int main(void) { return a << 2; }");
         assert_parse_succeeds("int main(void) { return a >> 2; }");
+    }
+
+    /// Verifies shift operators with constants parse.
+    #[test]
+    fn parses_shift_operators_constants() {
+        assert_parse_succeeds("int main(void) { return 1 << 3; }");
+        assert_parse_succeeds("int main(void) { return 8 >> 2; }");
+    }
+
+    /// Verifies shift operators with expressions parse.
+    #[test]
+    fn parses_shift_operators_expressions() {
+        assert_parse_succeeds("int main(void) { return (a + b) << c; }");
+        assert_parse_succeeds("int main(void) { return a >> (b + 1); }");
     }
 
     /// Verifies loop statements now parse (caught by target validation).
@@ -1425,10 +1492,37 @@ mod tests {
         assert_parse_succeeds("int main(void) { for (;;) return 0; }");
     }
 
-    /// Verifies `static` storage class is not accepted in 0.1.0 grammar.
+    /// Verifies while loop with condition parse.
     #[test]
-    fn rejects_static_storage_class() {
-        assert_parse_fails("static int counter;");
+    fn parses_while_loop_with_condition() {
+        assert_parse_succeeds("int main(void) { while (x < 10) x = x + 1; }");
+        assert_parse_succeeds("int main(void) { while (1) { } }");
+    }
+
+    /// Verifies for loop with all parts parse.
+    #[test]
+    fn parses_for_loop_parts() {
+        assert_parse_succeeds("int main(void) { for (i = 0; i < 10; i = i + 1) { } }");
+        assert_parse_succeeds("int main(void) { for (;;) break; }");
+    }
+
+    /// Verifies `static` storage class parses but is caught by target validation.
+    #[test]
+    fn parses_static_storage_class() {
+        assert_parse_succeeds("static int counter;");
+    }
+
+    /// Verifies static with initialization parses.
+    #[test]
+    fn parses_static_with_initializer() {
+        assert_parse_succeeds("static int x = 5;");
+        assert_parse_succeeds("static int arr[3];");
+    }
+
+    /// Verifies static in function parse.
+    #[test]
+    fn parses_static_in_function() {
+        assert_parse_succeeds("int main(void) { static int x; return x; }");
     }
 
     /// Verifies malformed declarations fail parsing.

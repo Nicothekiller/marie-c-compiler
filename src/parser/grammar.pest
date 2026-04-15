@@ -10,7 +10,9 @@ function_definition = {
 
 declaration = { declaration_specifiers ~ init_declarator_list? ~ ";" }
 
-declaration_specifiers = { type_specifier+ }
+declaration_specifiers = { storage_class_specifier? ~ type_specifier+ }
+
+storage_class_specifier = { kw_static }
 
 type_specifier = { kw_void | kw_char | kw_int }
 
@@ -113,6 +115,7 @@ kw_if = @{ "if" ~ !id_continue }
 kw_else = @{ "else" ~ !id_continue }
 kw_while = @{ "while" ~ !id_continue }
 kw_for = @{ "for" ~ !id_continue }
+kw_static = @{ "static" ~ !id_continue }
 kw_return = @{ "return" ~ !id_continue }
 kw_void = @{ "void" ~ !id_continue }
 kw_char = @{ "char" ~ !id_continue }
@@ -136,6 +139,7 @@ keyword = {
     | kw_else
     | kw_while
     | kw_for
+    | kw_static
     | kw_return
     | kw_void
     | kw_char
