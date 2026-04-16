@@ -231,14 +231,87 @@ fn parse_init_declarator(
     let (name, ty) = parse_declarator(source, declarator_pair, base_type)?;
 
     let initializer = inner
-        .find(|item| item.as_rule() == Rule::assignment_expression)
-        .map(|expr| parse_assignment_expression(source, expr))
+        .find_map(|item| {
+            if item.as_rule() == Rule::initializer {
+                for inner_item in item.into_inner() {
+                    if inner_item.as_rule() == Rule::assignment_expression {
+                        return Some(parse_assignment_expression(source, inner_item));
+                    } else if inner_item.as_rule() == Rule::array_initializer {
+                        return Some(parse_array_initializer(source, inner_item));
+                    } else if inner_item.as_rule() == Rule::string_literal {
+                        return Some(parse_string_literal_as_initializer(source, inner_item));
+                    }
+                }
+                None
+            } else if item.as_rule() == Rule::assignment_expression {
+                Some(parse_assignment_expression(source, item))
+            } else if item.as_rule() == Rule::array_initializer {
+                Some(parse_array_initializer(source, item))
+            } else if item.as_rule() == Rule::string_literal {
+                Some(parse_string_literal_as_initializer(source, item))
+            } else {
+                None
+            }
+        })
         .transpose()?;
 
     Ok(Declarator {
         name,
         ty,
         initializer,
+    })
+}
+
+fn parse_string_literal_as_initializer(
+    _source: &str,
+    pair: Pair<'_, Rule>,
+) -> Result<Expression, CompilerError> {
+    let lit = pair.as_str();
+    if lit.len() >= 2 && lit.starts_with('"') && lit.ends_with('"') {
+        let content = &lit[1..lit.len() - 1];
+        let unescaped = unescape_string_literal(content);
+
+        let mut elements: Vec<Expression> = unescaped
+            .chars()
+            .map(|c| Expression::IntegerLiteral {
+                value: c as i64,
+                location: None,
+            })
+            .collect();
+
+        elements.push(Expression::IntegerLiteral {
+            value: 0,
+            location: None,
+        });
+
+        Ok(Expression::ArrayInitializer {
+            elements,
+            location: Some(pair_location(&pair)),
+        })
+    } else {
+        Err(CompilerError::parse("invalid string literal".to_string()))
+    }
+}
+
+fn parse_array_initializer(
+    source: &str,
+    pair: Pair<'_, Rule>,
+) -> Result<Expression, CompilerError> {
+    let mut elements: Vec<Expression> = Vec::new();
+    let location = pair_location(&pair);
+
+    for item in pair.into_inner() {
+        match item.as_rule() {
+            Rule::assignment_expression => {
+                elements.push(parse_assignment_expression(source, item)?);
+            }
+            _ => {}
+        }
+    }
+
+    Ok(Expression::ArrayInitializer {
+        elements,
+        location: Some(location),
     })
 }
 
@@ -418,8 +491,79 @@ fn parse_statement(source: &str, pair: Pair<'_, Rule>) -> Result<Statement, Comp
         Rule::iteration_statement => parse_iteration_statement(source, inner),
         Rule::jump_statement => parse_jump_statement(source, inner),
         Rule::expression_statement => parse_expression_statement(source, inner),
+        Rule::inline_asm_statement => parse_inline_asm_statement(source, inner),
         _ => Err(CompilerError::parse("unsupported statement".to_string())),
     }
+}
+
+fn parse_inline_asm_statement(
+    _source: &str,
+    pair: Pair<'_, Rule>,
+) -> Result<Statement, CompilerError> {
+    let location = pair_location(&pair);
+
+    let mut inner = pair.into_inner();
+    let _ = inner
+        .next()
+        .ok_or_else(|| CompilerError::parse_at("missing __asm", location))?;
+
+    let asm_args_pair = inner
+        .next()
+        .ok_or_else(|| CompilerError::parse_at("missing asm arguments", location))?;
+
+    Ok(Statement::InlineAsm(extract_asm_instructions(
+        asm_args_pair,
+    )?))
+}
+
+fn extract_asm_instructions(asm_args_pair: Pair<'_, Rule>) -> Result<Vec<String>, CompilerError> {
+    let mut res: Vec<String> = vec![];
+
+    for asm_pair in asm_args_pair.into_inner() {
+        match asm_pair.as_rule() {
+            Rule::string_literal => {
+                let lit = asm_pair.as_str();
+                if lit.len() >= 2 && lit.starts_with('"') && lit.ends_with('"') {
+                    let content = &lit[1..lit.len() - 1];
+                    res.push(unescape_string_literal(content));
+                } else {
+                    return Err(CompilerError::parse("invalid string literal"));
+                }
+            }
+            Rule::asm_args => {
+                res.extend(extract_asm_instructions(asm_pair)?);
+            }
+            _ => {}
+        }
+    }
+
+    Ok(res)
+}
+
+fn unescape_string_literal(s: &str) -> String {
+    let mut result = String::new();
+    let mut chars = s.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            match chars.next() {
+                Some('n') => result.push('\n'),
+                Some('t') => result.push('\t'),
+                Some('r') => result.push('\r'),
+                Some('\\') => result.push('\\'),
+                Some('"') => result.push('"'),
+                Some(other) => {
+                    result.push('\\');
+                    result.push(other);
+                }
+                None => result.push('\\'),
+            }
+        } else {
+            result.push(c);
+        }
+    }
+
+    result
 }
 
 fn parse_selection_statement(
@@ -1550,5 +1694,284 @@ mod tests {
     #[test]
     fn rejects_missing_semicolon_after_return() {
         assert_parse_fails("int main(void) { return 1 }");
+    }
+
+    /// Verifies inline asm statement parses and extracts instructions.
+    #[test]
+    fn parses_inline_asm_statement() {
+        let unit = parse_unit("int main(void) { __asm(\"Load x\"); return 0; }");
+
+        let ExternalDeclaration::Function(function) = &unit.top_level_items[0] else {
+            panic!("expected function declaration");
+        };
+        let body = &function.body;
+
+        let BlockItem::Statement(Statement::InlineAsm(instructions)) = &body.items[0] else {
+            panic!("expected inline asm statement");
+        };
+
+        assert_eq!(instructions.len(), 1);
+        assert_eq!(instructions[0], "Load x");
+    }
+
+    /// Verifies inline asm with multiple string arguments.
+    #[test]
+    fn parses_inline_asm_multiple_strings() {
+        let unit = parse_unit("int main(void) { __asm(\"Load x\", \"Add y\"); return 0; }");
+
+        let ExternalDeclaration::Function(function) = &unit.top_level_items[0] else {
+            panic!("expected function declaration");
+        };
+        let body = &function.body;
+
+        let BlockItem::Statement(Statement::InlineAsm(instructions)) = &body.items[0] else {
+            panic!("expected inline asm statement");
+        };
+
+        assert_eq!(instructions.len(), 2);
+        assert_eq!(instructions[0], "Load x");
+        assert_eq!(instructions[1], "Add y");
+    }
+
+    /// Verifies inline asm escape sequences are unescaped.
+    #[test]
+    fn parses_inline_asm_escape_sequences() {
+        let unit = parse_unit("int main(void) { __asm(\"Line1\\nLine2\"); return 0; }");
+
+        let ExternalDeclaration::Function(function) = &unit.top_level_items[0] else {
+            panic!("expected function declaration");
+        };
+        let body = &function.body;
+
+        let BlockItem::Statement(Statement::InlineAsm(instructions)) = &body.items[0] else {
+            panic!("expected inline asm statement");
+        };
+
+        assert_eq!(instructions.len(), 1);
+        assert_eq!(instructions[0], "Line1\nLine2");
+    }
+
+    /// Verifies inline asm with tab escape sequence.
+    #[test]
+    fn parses_inline_asm_tab_escape() {
+        let unit = parse_unit("int main(void) { __asm(\"Col1\\tCol2\"); return 0; }");
+
+        let ExternalDeclaration::Function(function) = &unit.top_level_items[0] else {
+            panic!("expected function declaration");
+        };
+        let body = &function.body;
+
+        let BlockItem::Statement(Statement::InlineAsm(instructions)) = &body.items[0] else {
+            panic!("expected inline asm statement");
+        };
+
+        assert_eq!(instructions.len(), 1);
+        assert_eq!(instructions[0], "Col1\tCol2");
+    }
+
+    /// Verifies inline asm with backslash escape.
+    #[test]
+    fn parses_inline_asm_backslash_escape() {
+        let unit = parse_unit("int main(void) { __asm(\"path\\\\to\\\\file\"); return 0; }");
+
+        let ExternalDeclaration::Function(function) = &unit.top_level_items[0] else {
+            panic!("expected function declaration");
+        };
+        let body = &function.body;
+
+        let BlockItem::Statement(Statement::InlineAsm(instructions)) = &body.items[0] else {
+            panic!("expected inline asm statement");
+        };
+
+        assert_eq!(instructions.len(), 1);
+        assert_eq!(instructions[0], "path\\to\\file");
+    }
+
+    /// Verifies inline asm with quote escape.
+    #[test]
+    fn parses_inline_asm_quote_escape() {
+        let unit = parse_unit("int main(void) { __asm(\"say \\\"hello\\\"\"); return 0; }");
+
+        let ExternalDeclaration::Function(function) = &unit.top_level_items[0] else {
+            panic!("expected function declaration");
+        };
+        let body = &function.body;
+
+        let BlockItem::Statement(Statement::InlineAsm(instructions)) = &body.items[0] else {
+            panic!("expected inline asm statement");
+        };
+
+        assert_eq!(instructions.len(), 1);
+        assert_eq!(instructions[0], "say \"hello\"");
+    }
+
+    /// Verifies malformed inline asm is rejected - missing closing paren.
+    #[test]
+    fn rejects_inline_asm_missing_paren() {
+        assert_parse_fails("int main(void) { __asm(\"Load x\"; return 0; }");
+    }
+
+    /// Verifies inline asm without semicolon is rejected.
+    #[test]
+    fn rejects_inline_asm_no_semicolon() {
+        assert_parse_fails("int main(void) { __asm(\"Load x\") return 0; }");
+    }
+
+    /// Verifies inline asm with empty string parses.
+    #[test]
+    fn parses_inline_asm_empty_string() {
+        let unit = parse_unit("int main(void) { __asm(\"\"); return 0; }");
+
+        let ExternalDeclaration::Function(function) = &unit.top_level_items[0] else {
+            panic!("expected function declaration");
+        };
+        let body = &function.body;
+
+        let BlockItem::Statement(Statement::InlineAsm(instructions)) = &body.items[0] else {
+            panic!("expected inline asm statement");
+        };
+
+        assert_eq!(instructions.len(), 1);
+        assert_eq!(instructions[0], "");
+    }
+
+    /// Verifies array initializer parses with multiple elements.
+    #[test]
+    fn parses_array_initializer_multiple_elements() {
+        let unit = parse_unit("int arr[3] = { 1, 2, 3 };");
+
+        let ExternalDeclaration::GlobalDeclaration(declaration) = &unit.top_level_items[0] else {
+            panic!("expected global declaration");
+        };
+
+        let Some(initializer) = &declaration.declarators[0].initializer else {
+            panic!("expected initializer");
+        };
+
+        assert!(matches!(
+            initializer,
+            Expression::ArrayInitializer { elements, .. } if elements.len() == 3
+        ));
+    }
+
+    /// Verifies array initializer with single element parses.
+    #[test]
+    fn parses_array_initializer_single_element() {
+        let unit = parse_unit("int arr[1] = { 42 };");
+
+        let ExternalDeclaration::GlobalDeclaration(declaration) = &unit.top_level_items[0] else {
+            panic!("expected global declaration");
+        };
+
+        let Some(initializer) = &declaration.declarators[0].initializer else {
+            panic!("expected initializer");
+        };
+
+        assert!(matches!(
+            initializer,
+            Expression::ArrayInitializer { elements, .. } if elements.len() == 1
+        ));
+    }
+
+    /// Verifies array initializer in local variable declaration.
+    #[test]
+    fn parses_array_initializer_local_variable() {
+        let unit = parse_unit("int main(void) { int arr[2] = { 5, 10 }; return 0; }");
+
+        let ExternalDeclaration::Function(function) = &unit.top_level_items[0] else {
+            panic!("expected function declaration");
+        };
+
+        let BlockItem::Declaration(declaration) = &function.body.items[0] else {
+            panic!("expected declaration");
+        };
+
+        let Some(initializer) = &declaration.declarators[0].initializer else {
+            panic!("expected initializer");
+        };
+
+        assert!(matches!(initializer, Expression::ArrayInitializer { .. }));
+    }
+
+    /// Verifies regular scalar initializer still works.
+    #[test]
+    fn parses_scalar_initializer_still_works() {
+        let unit = parse_unit("int x = 42;");
+
+        let ExternalDeclaration::GlobalDeclaration(declaration) = &unit.top_level_items[0] else {
+            panic!("expected global declaration");
+        };
+
+        let Some(initializer) = &declaration.declarators[0].initializer else {
+            panic!("expected initializer");
+        };
+
+        assert!(matches!(
+            initializer,
+            Expression::IntegerLiteral { value: 42, .. }
+        ));
+    }
+
+    /// Verifies string literal initializer parses as array of char codes.
+    #[test]
+    fn parses_string_literal_initializer() {
+        let unit = parse_unit("char str[6] = \"hello\";");
+
+        let ExternalDeclaration::GlobalDeclaration(declaration) = &unit.top_level_items[0] else {
+            panic!("expected global declaration");
+        };
+
+        let declarator = &declaration.declarators[0];
+        assert_eq!(declarator.name, "str");
+
+        let Some(initializer) = &declarator.initializer else {
+            panic!("expected initializer");
+        };
+
+        let Expression::ArrayInitializer { elements, .. } = initializer else {
+            panic!("expected array initializer");
+        };
+
+        assert_eq!(elements.len(), 6);
+
+        if let Expression::IntegerLiteral { value, .. } = &elements[0] {
+            assert_eq!(*value, 'h' as i64);
+        } else {
+            panic!("expected first element to be 'h'");
+        }
+
+        if let Expression::IntegerLiteral { value, .. } = &elements[4] {
+            assert_eq!(*value, 'o' as i64);
+        } else {
+            panic!("expected fifth element to be 'o'");
+        }
+
+        if let Expression::IntegerLiteral { value, .. } = &elements[5] {
+            assert_eq!(*value, 0);
+        } else {
+            panic!("expected sixth element to be null terminator");
+        }
+    }
+
+    /// Verifies string literal initializer in local variable.
+    #[test]
+    fn parses_string_literal_initializer_local() {
+        let unit = parse_unit("int main(void) { char msg[5] = \"test\"; return 0; }");
+
+        let ExternalDeclaration::Function(function) = &unit.top_level_items[0] else {
+            panic!("expected function declaration");
+        };
+
+        let BlockItem::Declaration(declaration) = &function.body.items[0] else {
+            panic!("expected declaration");
+        };
+
+        let Some(initializer) = &declaration.declarators[0].initializer else {
+            panic!("expected initializer");
+        };
+
+        assert!(
+            matches!(initializer, Expression::ArrayInitializer { elements, .. } if elements.len() == 5)
+        );
     }
 }

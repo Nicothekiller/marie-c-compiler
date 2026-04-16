@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use crate::ast::{
-    Block, BlockItem, BuiltinType, Expression, ExternalDeclaration, FunctionDeclaration,
+    Block, BlockItem, BuiltinType, ConstExpr, Expression, ExternalDeclaration, FunctionDeclaration,
     TranslationUnit, Type, UnaryOp,
 };
 use crate::error::CompilerError;
@@ -308,6 +308,7 @@ fn analyze_statement(
             }
             Ok(())
         }
+        crate::ast::Statement::InlineAsm(_) => Ok(()),
         crate::ast::Statement::While { condition, body } => {
             analyze_expression(context, condition, info)?;
             analyze_statement(context, body, info)
@@ -636,6 +637,40 @@ fn analyze_expression(
                 )),
             }
         }
+        Expression::ArrayInitializer { elements, location } => {
+            if elements.is_empty() {
+                return Ok(ExprInfo {
+                    ty: Type::Array {
+                        element: Box::new(Type::Builtin(BuiltinType::Int)),
+                        size: Some(ConstExpr { value: 0 }),
+                    },
+                    is_lvalue: false,
+                });
+            }
+            let mut element_types = Vec::new();
+            for elem in elements {
+                let elem_info = analyze_expression(context, elem, info)?;
+                element_types.push(elem_info.ty);
+            }
+            let first_ty = element_types[0].clone();
+            for (i, ty) in element_types.iter().enumerate() {
+                if !types_compatible(ty, &first_ty) {
+                    return Err(CompilerError::semantic_with_location(
+                        format!("array initializer element {} type mismatch", i),
+                        *location,
+                    ));
+                }
+            }
+            Ok(ExprInfo {
+                ty: Type::Array {
+                    element: Box::new(first_ty),
+                    size: Some(ConstExpr {
+                        value: elements.len() as i64,
+                    }),
+                },
+                is_lvalue: false,
+            })
+        }
     }
 }
 
@@ -762,6 +797,26 @@ fn types_compatible(left: &Type, right: &Type) -> bool {
             },
             Type::Pointer(right_element),
         ) => types_compatible(left_element, right_element),
+        (
+            Type::Array {
+                element: left_element,
+                size: left_size,
+            },
+            Type::Array {
+                element: right_element,
+                size: right_size,
+            },
+        ) => {
+            let size_match = match (left_size, right_size) {
+                (Some(l), Some(r)) => l == r,
+                (None, None) => true,
+                _ => false,
+            };
+            size_match && types_compatible(left_element, right_element)
+        }
+        (Type::Builtin(l), Type::Builtin(r)) => {
+            matches!((l, r), (BuiltinType::Int, BuiltinType::Char) | (BuiltinType::Char, BuiltinType::Int))
+        }
         _ => false,
     }
 }

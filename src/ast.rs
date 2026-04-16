@@ -118,6 +118,7 @@ pub enum Statement {
     },
     Return(Option<Expression>),
     Expression(Option<Expression>),
+    InlineAsm(Vec<String>),
 }
 
 /// Expression forms for the reduced C subset.
@@ -175,6 +176,11 @@ pub enum Expression {
         index: Box<Expression>,
         location: Option<crate::error::SourceLocation>,
     },
+    /// Array initializer (`{ expr, expr, ... }`).
+    ArrayInitializer {
+        elements: Vec<Expression>,
+        location: Option<crate::error::SourceLocation>,
+    },
 }
 
 impl Expression {
@@ -187,7 +193,8 @@ impl Expression {
             | Self::Binary { location, .. }
             | Self::Assignment { location, .. }
             | Self::Call { location, .. }
-            | Self::Index { location, .. } => *location,
+            | Self::Index { location, .. }
+            | Self::ArrayInitializer { location, .. } => *location,
         }
     }
 }
@@ -386,6 +393,13 @@ fn write_statement(output: &mut String, statement: &Statement, depth: usize) {
             output.push_str(&format!("{indent}  )\n"));
             output.push_str(&format!("{indent})\n"));
         }
+        Statement::InlineAsm(instructions) => {
+            output.push_str(&format!("{indent}(InlineAsm\n"));
+            for instr in instructions {
+                output.push_str(&format!("{indent}  {}\n", instr));
+            }
+            output.push_str(&format!("{indent})\n"));
+        }
     }
 }
 
@@ -432,6 +446,13 @@ fn write_expression(output: &mut String, expression: &Expression, depth: usize) 
             output.push_str(&format!("{indent}(Index\n"));
             write_expression(output, base, depth + 1);
             write_expression(output, index, depth + 1);
+            output.push_str(&format!("{indent})\n"));
+        }
+        Expression::ArrayInitializer { elements, .. } => {
+            output.push_str(&format!("{indent}(ArrayInitializer\n"));
+            for elem in elements {
+                write_expression(output, elem, depth + 1);
+            }
             output.push_str(&format!("{indent})\n"));
         }
     }

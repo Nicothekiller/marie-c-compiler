@@ -126,6 +126,7 @@ fn validate_statement(stmt: &Statement, unsupported_ops: &[BinaryOp]) -> Result<
                 validate_expression(expr, unsupported_ops)?;
             }
         }
+        Statement::InlineAsm(_) => {}
     }
     Ok(())
 }
@@ -164,6 +165,11 @@ fn validate_expression(
         Expression::Index { base, index, .. } => {
             validate_expression(base, unsupported_ops)?;
             validate_expression(index, unsupported_ops)?;
+        }
+        Expression::ArrayInitializer { elements, .. } => {
+            for elem in elements {
+                validate_expression(elem, unsupported_ops)?;
+            }
         }
         Expression::Identifier { .. } | Expression::IntegerLiteral { .. } => {}
     }
@@ -258,7 +264,11 @@ impl MarieEmitter {
                     let Some(label) = self.globals.get(&declarator.name).cloned() else {
                         continue;
                     };
-                    self.emit_storage_for_declarator(&label, &declarator.ty);
+                    self.emit_storage_for_declarator(
+                        &label,
+                        &declarator.ty,
+                        declarator.initializer.as_ref(),
+                    );
                 }
             }
         }
@@ -381,7 +391,11 @@ impl MarieEmitter {
                             self.next_label_id(),
                             declarator.name
                         );
-                        self.emit_storage_for_declarator(&local_label, &declarator.ty);
+                        self.emit_storage_for_declarator(
+                            &local_label,
+                            &declarator.ty,
+                            declarator.initializer.as_ref(),
+                        );
                         context
                             .scopes
                             .last_mut()
@@ -389,8 +403,10 @@ impl MarieEmitter {
                             .insert(declarator.name.clone(), local_label.clone());
 
                         if let Some(initializer) = &declarator.initializer {
-                            self.emit_expression(initializer, context)?;
-                            self.instructions.push(format!("Store {}", local_label));
+                            if !matches!(initializer, Expression::ArrayInitializer { .. }) {
+                                self.emit_expression(initializer, context)?;
+                                self.instructions.push(format!("Store {}", local_label));
+                            }
                         }
                     }
                 }
@@ -454,6 +470,10 @@ impl MarieEmitter {
                 if let Some(expression) = expression {
                     self.emit_expression(expression, context)?;
                 }
+                Ok(())
+            }
+            Statement::InlineAsm(instructions) => {
+                self.emit_inline_asm(instructions, context)?;
                 Ok(())
             }
             Statement::While { condition, body } => {
@@ -686,10 +706,20 @@ impl MarieEmitter {
                 self.instructions.push("LoadI helper_addr".to_string());
                 Ok(())
             }
+            Expression::ArrayInitializer { .. } => {
+                Err(CompilerError::semantic(
+                    "array initializer should not be emitted directly".to_string(),
+                ))
+            }
         }
     }
 
-    fn emit_storage_for_declarator(&mut self, label: &str, ty: &Type) {
+    fn emit_storage_for_declarator(
+        &mut self,
+        label: &str,
+        ty: &Type,
+        initializer: Option<&Expression>,
+    ) {
         if let Type::Array { size, .. } = ty {
             let count = size
                 .and_then(|const_expr| usize::try_from(const_expr.value).ok())
@@ -698,14 +728,33 @@ impl MarieEmitter {
             let first_elem_label = format!("{}_elem_0", label);
             self.data
                 .push(format!("{}, ADR {}", label, first_elem_label));
-            self.data.push(format!("{}, DEC 0", first_elem_label));
-            for index in 1..count {
-                self.data.push(format!("{}_elem_{}, DEC 0", label, index));
+
+            let mut initial_values: Vec<i64> = Vec::new();
+            if let Some(Expression::ArrayInitializer { elements, .. }) = initializer {
+                for element in elements {
+                    if let Expression::IntegerLiteral { value, .. } = element {
+                        initial_values.push(*value);
+                    } else {
+                        break;
+                    }
+                }
+            }
+
+            for index in 0..count {
+                let element_label = format!("{}_elem_{}", label, index);
+                let value = initial_values.get(index).copied().unwrap_or(0);
+                self.data.push(format!("{}, DEC {}", element_label, value));
             }
             return;
         }
 
-        self.data.push(format!("{}, DEC 0", label));
+        let value = if let Some(Expression::IntegerLiteral { value, .. }) = initializer {
+            *value
+        } else {
+            0
+        };
+
+        self.data.push(format!("{}, DEC {}", label, value));
     }
 
     fn ensure_zero_const(&mut self) {
@@ -995,6 +1044,56 @@ impl MarieEmitter {
         ]);
     }
 
+    fn emit_inline_asm(
+        &mut self,
+        instructions: &[String],
+        context: &FunctionEmitContext<'_>,
+    ) -> Result<(), CompilerError> {
+        for instruction in instructions {
+            for line in instruction.lines() {
+                let rendered = self.render_inline_asm_line(line, context)?;
+                if !rendered.trim().is_empty() {
+                    self.instructions.push(rendered);
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn render_inline_asm_line(
+        &self,
+        line: &str,
+        context: &FunctionEmitContext<'_>,
+    ) -> Result<String, CompilerError> {
+        let mut output = String::with_capacity(line.len());
+        let bytes = line.as_bytes();
+        let mut index = 0;
+
+        while index < bytes.len() {
+            if bytes[index] == b'%' {
+                let start = index + 1;
+                if start < bytes.len() && is_identifier_start_byte(bytes[start]) {
+                    let mut end = start + 1;
+                    while end < bytes.len() && is_identifier_continue_byte(bytes[end]) {
+                        end += 1;
+                    }
+
+                    let name = &line[start..end];
+                    let label = self.resolve_symbol_label(context, name)?;
+                    output.push_str(&label);
+                    index = end;
+                    continue;
+                }
+            }
+
+            output.push(bytes[index] as char);
+            index += 1;
+        }
+
+        Ok(output)
+    }
+
     fn resolve_symbol_label(
         &self,
         context: &FunctionEmitContext<'_>,
@@ -1142,6 +1241,14 @@ fn normalized_parameter_count(function: &crate::ast::FunctionDeclaration) -> usi
     } else {
         function.params.len()
     }
+}
+
+fn is_identifier_start_byte(byte: u8) -> bool {
+    byte == b'_' || byte.is_ascii_alphabetic()
+}
+
+fn is_identifier_continue_byte(byte: u8) -> bool {
+    byte == b'_' || byte.is_ascii_alphanumeric()
 }
 
 #[cfg(test)]
@@ -2195,5 +2302,217 @@ mod tests {
         let output = MarieCodegen.emit(&unit).expect("codegen should succeed");
         assert!(output.contains("for_cond_"));
         assert!(output.contains("for_end_"));
+    }
+
+    #[test]
+    fn emits_inline_asm_with_variable_substitution() {
+        let unit = TranslationUnit {
+            top_level_items: vec![ExternalDeclaration::Function(FunctionDeclaration {
+                name: "main".to_string(),
+                return_type: Type::Builtin(BuiltinType::Int),
+                params: vec![Parameter {
+                    name: None,
+                    ty: Type::Builtin(BuiltinType::Void),
+                    location: None,
+                }],
+                body: Block {
+                    items: vec![
+                        BlockItem::Declaration(crate::ast::Declaration {
+                            storage_class: None,
+                            declarators: vec![crate::ast::Declarator {
+                                name: "x".to_string(),
+                                ty: Type::Builtin(BuiltinType::Int),
+                                initializer: None,
+                            }],
+                        }),
+                        BlockItem::Statement(Statement::InlineAsm(vec![
+                            "Load %x".to_string(),
+                            "Output".to_string(),
+                        ])),
+                        BlockItem::Statement(Statement::Return(Some(Expression::IntegerLiteral {
+                            value: 0,
+                            location: None,
+                        }))),
+                    ],
+                },
+            })],
+        };
+
+        let output = MarieCodegen.emit(&unit).expect("codegen should succeed");
+
+        assert!(output.contains("Load v_main_"));
+        assert!(output.contains("_x"));
+        assert!(output.contains("Output"));
+    }
+
+    #[test]
+    fn emits_inline_asm_with_newline_content() {
+        let unit = TranslationUnit {
+            top_level_items: vec![ExternalDeclaration::Function(FunctionDeclaration {
+                name: "main".to_string(),
+                return_type: Type::Builtin(BuiltinType::Int),
+                params: vec![Parameter {
+                    name: None,
+                    ty: Type::Builtin(BuiltinType::Void),
+                    location: None,
+                }],
+                body: Block {
+                    items: vec![
+                        BlockItem::Statement(Statement::InlineAsm(vec![
+                            "Clear\nOutput".to_string(),
+                        ])),
+                        BlockItem::Statement(Statement::Return(Some(Expression::IntegerLiteral {
+                            value: 0,
+                            location: None,
+                        }))),
+                    ],
+                },
+            })],
+        };
+
+        let output = MarieCodegen.emit(&unit).expect("codegen should succeed");
+
+        assert!(output.contains("Clear"));
+        assert!(output.contains("Output"));
+    }
+
+    #[test]
+    fn emits_global_array_initializer_values() {
+        let unit = TranslationUnit {
+            top_level_items: vec![
+                ExternalDeclaration::GlobalDeclaration(crate::ast::Declaration {
+                    storage_class: None,
+                    declarators: vec![crate::ast::Declarator {
+                        name: "msg".to_string(),
+                        ty: Type::Array {
+                            element: Box::new(Type::Builtin(BuiltinType::Char)),
+                            size: Some(crate::ast::ConstExpr { value: 6 }),
+                        },
+                        initializer: Some(Expression::ArrayInitializer {
+                            elements: vec![
+                                Expression::IntegerLiteral {
+                                    value: 'h' as i64,
+                                    location: None,
+                                },
+                                Expression::IntegerLiteral {
+                                    value: 'e' as i64,
+                                    location: None,
+                                },
+                                Expression::IntegerLiteral {
+                                    value: 'l' as i64,
+                                    location: None,
+                                },
+                                Expression::IntegerLiteral {
+                                    value: 'l' as i64,
+                                    location: None,
+                                },
+                                Expression::IntegerLiteral {
+                                    value: 'o' as i64,
+                                    location: None,
+                                },
+                                Expression::IntegerLiteral {
+                                    value: 0,
+                                    location: None,
+                                },
+                            ],
+                            location: None,
+                        }),
+                    }],
+                }),
+                ExternalDeclaration::Function(FunctionDeclaration {
+                    name: "main".to_string(),
+                    return_type: Type::Builtin(BuiltinType::Int),
+                    params: vec![Parameter {
+                        name: None,
+                        ty: Type::Builtin(BuiltinType::Void),
+                        location: None,
+                    }],
+                    body: Block {
+                        items: vec![BlockItem::Statement(Statement::Return(Some(
+                            Expression::IntegerLiteral {
+                                value: 0,
+                                location: None,
+                            },
+                        )))],
+                    },
+                }),
+            ],
+        };
+
+        let output = MarieCodegen.emit(&unit).expect("codegen should succeed");
+
+        assert!(output.contains("g_msg_elem_0, DEC 104"));
+        assert!(output.contains("g_msg_elem_1, DEC 101"));
+        assert!(output.contains("g_msg_elem_4, DEC 111"));
+        assert!(output.contains("g_msg_elem_5, DEC 0"));
+    }
+
+    #[test]
+    fn emits_local_array_initializer_values_in_data() {
+        let unit = TranslationUnit {
+            top_level_items: vec![ExternalDeclaration::Function(FunctionDeclaration {
+                name: "main".to_string(),
+                return_type: Type::Builtin(BuiltinType::Int),
+                params: vec![Parameter {
+                    name: None,
+                    ty: Type::Builtin(BuiltinType::Void),
+                    location: None,
+                }],
+                body: Block {
+                    items: vec![
+                        BlockItem::Declaration(crate::ast::Declaration {
+                            storage_class: None,
+                            declarators: vec![crate::ast::Declarator {
+                                name: "msg".to_string(),
+                                ty: Type::Array {
+                                    element: Box::new(Type::Builtin(BuiltinType::Char)),
+                                    size: Some(crate::ast::ConstExpr { value: 6 }),
+                                },
+                                initializer: Some(Expression::ArrayInitializer {
+                                    elements: vec![
+                                        Expression::IntegerLiteral {
+                                            value: 'h' as i64,
+                                            location: None,
+                                        },
+                                        Expression::IntegerLiteral {
+                                            value: 'e' as i64,
+                                            location: None,
+                                        },
+                                        Expression::IntegerLiteral {
+                                            value: 'l' as i64,
+                                            location: None,
+                                        },
+                                        Expression::IntegerLiteral {
+                                            value: 'l' as i64,
+                                            location: None,
+                                        },
+                                        Expression::IntegerLiteral {
+                                            value: 'o' as i64,
+                                            location: None,
+                                        },
+                                        Expression::IntegerLiteral {
+                                            value: 0,
+                                            location: None,
+                                        },
+                                    ],
+                                    location: None,
+                                }),
+                            }],
+                        }),
+                        BlockItem::Statement(Statement::Return(Some(Expression::IntegerLiteral {
+                            value: 0,
+                            location: None,
+                        }))),
+                    ],
+                },
+            })],
+        };
+
+        let output = MarieCodegen.emit(&unit).expect("codegen should succeed");
+
+        assert!(output.contains("_msg_elem_0, DEC 104"));
+        assert!(output.contains("_msg_elem_1, DEC 101"));
+        assert!(output.contains("_msg_elem_4, DEC 111"));
+        assert!(output.contains("_msg_elem_5, DEC 0"));
     }
 }

@@ -17,7 +17,10 @@ storage_class_specifier = { kw_static }
 type_specifier = { kw_void | kw_char | kw_int }
 
 init_declarator_list = { init_declarator ~ ("," ~ init_declarator)* }
-init_declarator = { declarator ~ ("=" ~ assignment_expression)? }
+init_declarator = { declarator ~ ("=" ~ initializer)? }
+
+initializer = { assignment_expression | array_initializer | string_literal }
+array_initializer = { "{" ~ assignment_expression ~ ("," ~ assignment_expression)* ~ "}" }
 
 declarator = { pointer? ~ direct_declarator }
 pointer = @{ "*"+ }
@@ -47,6 +50,7 @@ statement = {
     | iteration_statement
     | jump_statement
     | expression_statement
+    | inline_asm_statement
 }
 
 iteration_statement = {
@@ -62,6 +66,10 @@ selection_statement = {
 
 jump_statement = {
     kw_return ~ expression? ~ ";"
+}
+
+inline_asm_statement = {
+  kw_asm ~ asm_args ~ ")" ~ ";" 
 }
 
 expression = { assignment_expression ~ ("," ~ assignment_expression)* }
@@ -111,6 +119,7 @@ primary_expression = {
     | "(" ~ expression ~ ")"
 }
 
+
 kw_if = @{ "if" ~ !id_continue }
 kw_else = @{ "else" ~ !id_continue }
 kw_while = @{ "while" ~ !id_continue }
@@ -120,6 +129,11 @@ kw_return = @{ "return" ~ !id_continue }
 kw_void = @{ "void" ~ !id_continue }
 kw_char = @{ "char" ~ !id_continue }
 kw_int = @{ "int" ~ !id_continue }
+kw_asm = @{ "__asm(" }
+
+asm_args = { string_literal ~ ("," ~ string_literal)* }
+string_literal = { "\"" ~ string_content* ~ "\"" }
+string_content = @{ !("\\" | "\"")  ~ ANY | "\\" ~ ANY }
 
 op_or = { "||" }
 op_and = { "&&" }
@@ -144,6 +158,7 @@ keyword = {
     | kw_void
     | kw_char
     | kw_int
+    | kw_asm
 }
 
 id_start = _{ ASCII_ALPHA | "_" }
