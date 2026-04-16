@@ -140,7 +140,7 @@ impl SemanticAnalyzer {
                                 return_type: Type::Builtin(BuiltinType::Void),
                             };
                             let init_info = analyze_expression(&global_context, initializer, info)?;
-                            if !types_compatible(&declarator.ty, &init_info.ty) {
+                            if !initializer_types_compatible(&declarator.ty, &init_info.ty) {
                                 return Err(CompilerError::semantic_with_location(
                                     "initializer type is incompatible with declaration type",
                                     initializer.location(),
@@ -240,7 +240,7 @@ fn analyze_block(
                     declare_in_current_scope(context, &declarator.name, &declarator.ty)?;
                     if let Some(initializer) = &declarator.initializer {
                         let init_info = analyze_expression(context, initializer, info)?;
-                        if !types_compatible(&declarator.ty, &init_info.ty) {
+                        if !initializer_types_compatible(&declarator.ty, &init_info.ty) {
                             return Err(CompilerError::semantic_with_location(
                                 "initializer type is incompatible with declaration type",
                                 initializer.location(),
@@ -818,6 +818,25 @@ fn types_compatible(left: &Type, right: &Type) -> bool {
             matches!((l, r), (BuiltinType::Int, BuiltinType::Char) | (BuiltinType::Char, BuiltinType::Int))
         }
         _ => false,
+    }
+}
+
+fn initializer_types_compatible(declared: &Type, initializer: &Type) -> bool {
+    match (declared, initializer) {
+        (
+            Type::Array {
+                element: declared_element,
+                size: Some(declared_size),
+            },
+            Type::Array {
+                element: init_element,
+                size: Some(init_size),
+            },
+        ) => {
+            declared_size.value >= init_size.value
+                && types_compatible(declared_element, init_element)
+        }
+        _ => types_compatible(declared, initializer),
     }
 }
 

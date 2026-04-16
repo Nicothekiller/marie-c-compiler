@@ -1,12 +1,16 @@
-int putchar(int c) { __asm("Load %c"); __asm("Output"); return c; }
+void putchar(int c) {
+    __asm("Load %c", "Output");
+}
+
+void print(char *str){
+    while (*str != 0) {
+        putchar(*str);
+        str = ( str + 1 );
+    }
+}
 
 int main(void) {
-    char msg[4] = "ABC";
-    int i = 0;
-    while (i < 4) {
-        putchar(msg[i]);
-        i = i + 1;
-    }
-    putchar(10);
+    char msg[20] = "Hello, world!\n";
+    print(msg);
     return 0;
 }
