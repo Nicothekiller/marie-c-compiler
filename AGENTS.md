@@ -19,7 +19,7 @@ Scope: entire repository unless overridden by nested `AGENTS.md` files.
 - `src/compiler.rs`: pipeline coordinator
 - `src/codegen.rs`: Marie output emitter
 - `src/error.rs`: shared compiler error types
- - `docs/parser_plan.md`: parser 0.1.0/0.2.0/0.3.0 roadmap
+ - `docs/roadmap.md`: compiler feature roadmap
 
 ## High-Level Pipeline
 - Parse source text into parse tree
@@ -59,7 +59,7 @@ Scope: entire repository unless overridden by nested `AGENTS.md` files.
 
 ## AST Guidelines
 - Model language features with explicit node variants
- - Keep 0.1.0 AST aligned with `docs/parser_plan.md`
+ - Keep AST aligned with current language scope in `docs/roadmap.md`
 - Separate declarations, statements, and expressions cleanly
 - Encode operators as enums instead of raw strings
  - Preserve room for 0.2.0/0.3.0 expansion without breaking names
@@ -92,7 +92,7 @@ Scope: entire repository unless overridden by nested `AGENTS.md` files.
 
 ## Documentation Expectations
 - Keep docs concise while project evolves
-- Update `docs/parser_plan.md` when scope changes
+- Update `docs/roadmap.md` when scope changes
 - Add function-level docs for new public functions
 - Avoid large speculative docs until features are stable
 

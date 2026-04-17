@@ -30,7 +30,7 @@ Quickstart
    This produces foo.mas in the same directory.
 
 Notes
-- This project intentionally targets a small, well-specified subset of C. See docs/parser_plan.md for details on the language boundary.
+- This project intentionally targets a small, well-specified subset of C. See docs/roadmap.md for details on the language boundary.
 - The compiler assumes inputs are preprocessed; it does not run the C preprocessor.
 
 Contributing
