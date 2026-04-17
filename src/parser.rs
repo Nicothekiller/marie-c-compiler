@@ -4,8 +4,8 @@ use pest_derive::Parser;
 
 use crate::ast::{
     BinaryOp, Block, BlockItem, BuiltinType, ConstExpr, Declaration, Declarator, Expression,
-    ExternalDeclaration, FunctionDeclaration, Parameter, Statement, StorageClass, TranslationUnit,
-    Type, UnaryOp,
+    ExternalDeclaration, FunctionDeclaration, Parameter, Statement, StorageClass, StructField,
+    TranslationUnit, Type, UnaryOp,
 };
 use crate::error::{CompilerError, SourceLocation};
 
@@ -203,7 +203,11 @@ fn parse_type_specifier(pair: Pair<'_, Rule>) -> Result<Type, CompilerError> {
         return Err(CompilerError::parse("invalid type specifier".to_string()));
     };
 
-    let ty = match inner.as_rule() {
+    if inner.as_rule() == Rule::struct_specifier {
+        return parse_struct_specifier(inner);
+    }
+
+    let builtin = match inner.as_rule() {
         Rule::kw_int => BuiltinType::Int,
         Rule::kw_char => BuiltinType::Char,
         Rule::kw_void => BuiltinType::Void,
@@ -214,7 +218,70 @@ fn parse_type_specifier(pair: Pair<'_, Rule>) -> Result<Type, CompilerError> {
         }
     };
 
-    Ok(Type::Builtin(ty))
+    Ok(Type::Builtin(builtin))
+}
+
+fn parse_struct_specifier(pair: Pair<'_, Rule>) -> Result<Type, CompilerError> {
+    let mut inner = pair.into_inner();
+
+    let Some(first) = inner.next() else {
+        return Err(CompilerError::parse("struct missing keyword".to_string()));
+    };
+    if first.as_rule() != Rule::kw_struct {
+        return Err(CompilerError::parse("invalid struct specifier".to_string()));
+    }
+
+    let Some(name_pair) = inner.next() else {
+        return Err(CompilerError::parse("struct missing name".to_string()));
+    };
+
+    let mut fields = Vec::new();
+    for item in inner {
+        if item.as_rule() == Rule::struct_declaration {
+            fields.extend(parse_struct_declaration(item)?);
+        }
+    }
+
+    Ok(Type::Struct {
+        name: name_pair.as_str().to_string(),
+        fields,
+    })
+}
+
+fn parse_struct_declaration(pair: Pair<'_, Rule>) -> Result<Vec<StructField>, CompilerError> {
+    let source = pair.as_span().get_input();
+    let mut inner = pair.into_inner();
+    let Some(specifier_pair) = inner.next() else {
+        return Err(CompilerError::parse(
+            "struct field missing type specifier".to_string(),
+        ));
+    };
+    let (_storage, base_type) = parse_declaration_specifiers(specifier_pair)?;
+
+    let Some(declarator_list_pair) = inner.next() else {
+        return Err(CompilerError::parse(
+            "struct field missing declarator list".to_string(),
+        ));
+    };
+
+    let mut fields = Vec::new();
+    for item in declarator_list_pair.into_inner() {
+        if item.as_rule() != Rule::struct_declarator {
+            continue;
+        }
+        let Some(declarator_pair) = item.into_inner().next() else {
+            continue;
+        };
+        let (name, ty) = parse_declarator(source, declarator_pair, base_type.clone())?;
+        if matches!(ty, Type::Function { .. }) {
+            return Err(CompilerError::parse(
+                "function pointer fields are not supported".to_string(),
+            ));
+        }
+        fields.push(StructField { name, ty });
+    }
+
+    Ok(fields)
 }
 
 /// Lowers an init-declarator into a named declarator with optional initializer.
@@ -919,39 +986,58 @@ fn parse_postfix_expression(
         }
 
         let suffix_location = pair_location(&suffix);
-        let suffix_text = suffix.as_str();
-        let mut suffix_inner = suffix.into_inner();
-
-        if suffix_text.starts_with('[') {
-            let Some(index_pair) = suffix_inner.next() else {
-                return Err(CompilerError::parse(
-                    "index suffix missing expression".to_string(),
-                ));
-            };
-
-            let index = parse_expression(source, index_pair)?;
-            expr = Expression::Index {
-                base: Box::new(expr),
-                index: Box::new(index),
-                location: Some(suffix_location),
-            };
+        let Some(actual_suffix) = suffix.into_inner().next() else {
             continue;
-        }
-
-        let mut args = Vec::new();
-        if let Some(argument_list_pair) = suffix_inner.next() {
-            for item in argument_list_pair.into_inner() {
-                if item.as_rule() == Rule::assignment_expression {
-                    args.push(parse_assignment_expression(source, item)?);
-                }
-            }
-        }
-
-        expr = Expression::Call {
-            callee: Box::new(expr),
-            args,
-            location: Some(suffix_location),
         };
+
+        match actual_suffix.as_rule() {
+            Rule::index_suffix => {
+                let Some(index_pair) = actual_suffix.into_inner().next() else {
+                    return Err(CompilerError::parse(
+                        "index suffix missing expression".to_string(),
+                    ));
+                };
+
+                let index = parse_expression(source, index_pair)?;
+                expr = Expression::Index {
+                    base: Box::new(expr),
+                    index: Box::new(index),
+                    location: Some(suffix_location),
+                };
+            }
+            Rule::call_suffix => {
+                let mut args = Vec::new();
+                if let Some(argument_list_pair) = actual_suffix.into_inner().next() {
+                    for item in argument_list_pair.into_inner() {
+                        if item.as_rule() == Rule::assignment_expression {
+                            args.push(parse_assignment_expression(source, item)?);
+                        }
+                    }
+                }
+
+                expr = Expression::Call {
+                    callee: Box::new(expr),
+                    args,
+                    location: Some(suffix_location),
+                };
+            }
+            Rule::member_suffix | Rule::pointer_member_suffix => {
+                let through_pointer = actual_suffix.as_rule() == Rule::pointer_member_suffix;
+                let Some(member_pair) = actual_suffix.into_inner().next() else {
+                    return Err(CompilerError::parse(
+                        "member suffix missing field name".to_string(),
+                    ));
+                };
+
+                expr = Expression::MemberAccess {
+                    base: Box::new(expr),
+                    member: member_pair.as_str().to_string(),
+                    through_pointer,
+                    location: Some(suffix_location),
+                };
+            }
+            _ => {}
+        }
     }
 
     Ok(expr)
@@ -1973,5 +2059,46 @@ mod tests {
         assert!(
             matches!(initializer, Expression::ArrayInitializer { elements, .. } if elements.len() == 5)
         );
+    }
+
+    #[test]
+    fn parses_struct_declaration_and_member_access() {
+        let unit = parse_unit("struct Point { int x; int y; } p; int main(void) { return p.x; }");
+
+        let ExternalDeclaration::GlobalDeclaration(declaration) = &unit.top_level_items[0] else {
+            panic!("expected global declaration");
+        };
+
+        let ty = &declaration.declarators[0].ty;
+        assert!(matches!(ty, Type::Struct { name, fields } if name == "Point" && fields.len() == 2));
+
+        let ExternalDeclaration::Function(function) = &unit.top_level_items[1] else {
+            panic!("expected function declaration");
+        };
+
+        let BlockItem::Statement(Statement::Return(Some(Expression::MemberAccess { member, through_pointer, .. }))) = &function.body.items[0] else {
+            panic!("expected member access");
+        };
+
+        assert_eq!(member, "x");
+        assert!(!through_pointer);
+    }
+
+    #[test]
+    fn parses_pointer_member_access_arrow() {
+        let unit = parse_unit(
+            "struct Point { int x; int y; } p; int main(void) { struct Point *q; q = &p; return q->y; }",
+        );
+
+        let ExternalDeclaration::Function(function) = &unit.top_level_items[1] else {
+            panic!("expected function declaration");
+        };
+
+        let BlockItem::Statement(Statement::Return(Some(Expression::MemberAccess { member, through_pointer, .. }))) = &function.body.items[2] else {
+            panic!("expected member access");
+        };
+
+        assert_eq!(member, "y");
+        assert!(*through_pointer);
     }
 }

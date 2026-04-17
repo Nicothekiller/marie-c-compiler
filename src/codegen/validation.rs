@@ -135,6 +135,9 @@ fn validate_expression(
             validate_expression(base, unsupported_ops)?;
             validate_expression(index, unsupported_ops)?;
         }
+        Expression::MemberAccess { base, .. } => {
+            validate_expression(base, unsupported_ops)?;
+        }
         Expression::ArrayInitializer { elements, .. } => {
             for elem in elements {
                 validate_expression(elem, unsupported_ops)?;

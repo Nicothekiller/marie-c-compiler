@@ -14,7 +14,12 @@ declaration_specifiers = { storage_class_specifier? ~ type_specifier+ }
 
 storage_class_specifier = { kw_static }
 
-type_specifier = { kw_void | kw_char | kw_int }
+type_specifier = { struct_specifier | kw_void | kw_char | kw_int }
+
+struct_specifier = { kw_struct ~ ident ~ ("{" ~ struct_declaration+ ~ "}")? }
+struct_declaration = { declaration_specifiers ~ struct_declarator_list ~ ";" }
+struct_declarator_list = { struct_declarator ~ ("," ~ struct_declarator)* }
+struct_declarator = { declarator }
 
 init_declarator_list = { init_declarator ~ ("," ~ init_declarator)* }
 init_declarator = { declarator ~ ("=" ~ initializer)? }
@@ -107,9 +112,16 @@ postfix_expression = {
 }
 
 postfix_suffix = {
-    "[" ~ expression ~ "]"
-    | "(" ~ argument_expression_list? ~ ")"
+    index_suffix
+    | call_suffix
+    | member_suffix
+    | pointer_member_suffix
 }
+
+index_suffix = { "[" ~ expression ~ "]" }
+call_suffix = { "(" ~ argument_expression_list? ~ ")" }
+member_suffix = { "." ~ ident }
+pointer_member_suffix = { "->" ~ ident }
 
 argument_expression_list = { assignment_expression ~ ("," ~ assignment_expression)* }
 
@@ -129,6 +141,7 @@ kw_return = @{ "return" ~ !id_continue }
 kw_void = @{ "void" ~ !id_continue }
 kw_char = @{ "char" ~ !id_continue }
 kw_int = @{ "int" ~ !id_continue }
+kw_struct = @{ "struct" ~ !id_continue }
 kw_asm = @{ "__asm(" }
 
 asm_args = { string_literal ~ ("," ~ string_literal)* }
@@ -158,6 +171,7 @@ keyword = {
     | kw_void
     | kw_char
     | kw_int
+    | kw_struct
     | kw_asm
 }
 

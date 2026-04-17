@@ -39,6 +39,18 @@ pub enum Type {
         return_type: Box<Type>,
         params: Vec<Parameter>,
     },
+    /// Struct type (`struct Name { ... }` or `struct Name`).
+    Struct {
+        name: String,
+        fields: Vec<StructField>,
+    },
+}
+
+/// Struct field declaration entry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StructField {
+    pub name: String,
+    pub ty: Type,
 }
 
 /// Compile-time integer expression placeholder for declarator sizes.
@@ -181,6 +193,13 @@ pub enum Expression {
         elements: Vec<Expression>,
         location: Option<crate::error::SourceLocation>,
     },
+    /// Struct member access (`base.member` or `base->member`).
+    MemberAccess {
+        base: Box<Expression>,
+        member: String,
+        through_pointer: bool,
+        location: Option<crate::error::SourceLocation>,
+    },
 }
 
 impl Expression {
@@ -194,7 +213,8 @@ impl Expression {
             | Self::Assignment { location, .. }
             | Self::Call { location, .. }
             | Self::Index { location, .. }
-            | Self::ArrayInitializer { location, .. } => *location,
+            | Self::ArrayInitializer { location, .. }
+            | Self::MemberAccess { location, .. } => *location,
         }
     }
 }
@@ -453,6 +473,17 @@ fn write_expression(output: &mut String, expression: &Expression, depth: usize) 
             for elem in elements {
                 write_expression(output, elem, depth + 1);
             }
+            output.push_str(&format!("{indent})\n"));
+        }
+        Expression::MemberAccess {
+            base,
+            member,
+            through_pointer,
+            ..
+        } => {
+            let access = if *through_pointer { "Arrow" } else { "Dot" };
+            output.push_str(&format!("{indent}(MemberAccess {access} {member}\n"));
+            write_expression(output, base, depth + 1);
             output.push_str(&format!("{indent})\n"));
         }
     }

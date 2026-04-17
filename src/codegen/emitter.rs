@@ -1,6 +1,9 @@
 use std::collections::HashMap;
 
-use crate::ast::{Block, Expression, ExternalDeclaration, FunctionDeclaration, Statement, TranslationUnit, Type};
+use crate::ast::{
+    Block, Expression, ExternalDeclaration, FunctionDeclaration, Parameter, Statement, StructField,
+    TranslationUnit, Type,
+};
 use crate::error::CompilerError;
 
 #[derive(Debug, Default)]
@@ -9,6 +12,8 @@ pub(crate) struct MarieEmitter {
     data: Vec<String>,
     functions: HashMap<String, PlannedFunction>,
     globals: HashMap<String, String>,
+    global_types: HashMap<String, Type>,
+    struct_definitions: HashMap<String, Vec<StructField>>,
     int_consts: HashMap<i64, String>,
     addr_consts: HashMap<String, String>,
     label_counter: usize,
@@ -36,11 +41,20 @@ struct PlannedFunction {
 struct FunctionEmitContext<'a> {
     function_name: &'a str,
     labels: &'a FunctionLabels,
-    scopes: Vec<HashMap<String, String>>,
+    scopes: Vec<HashMap<String, LocalBinding>>,
+}
+
+#[derive(Debug, Clone)]
+struct LocalBinding {
+    label: String,
+    ty: Type,
 }
 
 impl MarieEmitter {
-    pub(crate) fn emit_translation_unit(&mut self, ast: &TranslationUnit) -> Result<(), CompilerError> {
+    pub(crate) fn emit_translation_unit(
+        &mut self,
+        ast: &TranslationUnit,
+    ) -> Result<(), CompilerError> {
         self.plan_symbols(ast);
         self.emit_start_entry();
 
@@ -59,7 +73,7 @@ impl MarieEmitter {
                     };
                     self.emit_storage_for_declarator(
                         &label,
-                        &declarator.ty,
+                        &self.resolve_type(&declarator.ty).unwrap_or_else(|_| declarator.ty.clone()),
                         declarator.initializer.as_ref(),
                     );
                 }
@@ -74,11 +88,16 @@ impl MarieEmitter {
             match item {
                 ExternalDeclaration::GlobalDeclaration(declaration) => {
                     for declarator in &declaration.declarators {
+                        self.register_structs_from_type(&declarator.ty);
                         self.globals
                             .insert(declarator.name.clone(), format!("g_{}", declarator.name));
+                        if let Ok(ty) = self.resolve_type(&declarator.ty) {
+                            self.global_types.insert(declarator.name.clone(), ty);
+                        }
                     }
                 }
                 ExternalDeclaration::Function(function) => {
+                    self.register_structs_from_type(&function.return_type);
                     let labels = FunctionLabels {
                         entry: format!("fn_{}", function.name),
                         body: format!("fn_{}_body", function.name),
@@ -98,6 +117,10 @@ impl MarieEmitter {
                             param_labels,
                         },
                     );
+
+                    for parameter in &function.params {
+                        self.register_structs_from_type(&parameter.ty);
+                    }
                 }
             }
         }
@@ -120,10 +143,7 @@ impl MarieEmitter {
         self.instructions.extend(instructions);
     }
 
-    fn emit_function(
-        &mut self,
-        function: &FunctionDeclaration,
-    ) -> Result<(), CompilerError> {
+    fn emit_function(&mut self, function: &FunctionDeclaration) -> Result<(), CompilerError> {
         let Some(planned) = self.functions.get(&function.name).cloned() else {
             return Err(CompilerError::semantic(format!(
                 "missing function labels for '{}'",
@@ -146,11 +166,18 @@ impl MarieEmitter {
             if let Some(name) = &parameter.name
                 && let Some(param_label) = planned.param_labels.get(index)
             {
+                let param_ty = self.resolve_type(&parameter.ty)?;
                 context
                     .scopes
                     .last_mut()
                     .expect("function scope should exist")
-                    .insert(name.clone(), param_label.clone());
+                    .insert(
+                        name.clone(),
+                        LocalBinding {
+                            label: param_label.clone(),
+                            ty: param_ty,
+                        },
+                    );
             }
         }
 
@@ -186,20 +213,26 @@ impl MarieEmitter {
                         );
                         self.emit_storage_for_declarator(
                             &local_label,
-                            &declarator.ty,
+                            &self.resolve_type(&declarator.ty).unwrap_or_else(|_| declarator.ty.clone()),
                             declarator.initializer.as_ref(),
                         );
                         context
                             .scopes
                             .last_mut()
                             .expect("scope should exist")
-                            .insert(declarator.name.clone(), local_label.clone());
+                            .insert(
+                                declarator.name.clone(),
+                                LocalBinding {
+                                    label: local_label.clone(),
+                                    ty: self.resolve_type(&declarator.ty)?,
+                                },
+                            );
 
-                        if let Some(initializer) = &declarator.initializer {
-                            if !matches!(initializer, Expression::ArrayInitializer { .. }) {
-                                self.emit_expression(initializer, context)?;
-                                self.instructions.push(format!("Store {}", local_label));
-                            }
+                        if let Some(initializer) = &declarator.initializer
+                            && !matches!(initializer, Expression::ArrayInitializer { .. })
+                        {
+                            self.emit_expression(initializer, context)?;
+                            self.instructions.push(format!("Store {}", local_label));
                         }
                     }
                 }
@@ -457,6 +490,21 @@ impl MarieEmitter {
                             "StoreI helper_addr".to_string(),
                         ]);
                     }
+                    Expression::MemberAccess {
+                        base,
+                        member,
+                        through_pointer,
+                        ..
+                    } => {
+                        self.ensure_index_cells();
+                        self.instructions
+                            .push("Store helper_store_value".to_string());
+                        self.emit_member_address(base, member, *through_pointer, context)?;
+                        self.push_instructions([
+                            "Load helper_store_value".to_string(),
+                            "StoreI helper_addr".to_string(),
+                        ]);
+                    }
                     _ => {
                         return Err(CompilerError::semantic(
                             "unsupported assignment target in codegen",
@@ -499,11 +547,19 @@ impl MarieEmitter {
                 self.instructions.push("LoadI helper_addr".to_string());
                 Ok(())
             }
-            Expression::ArrayInitializer { .. } => {
-                Err(CompilerError::semantic(
-                    "array initializer should not be emitted directly".to_string(),
-                ))
+            Expression::MemberAccess {
+                base,
+                member,
+                through_pointer,
+                ..
+            } => {
+                self.emit_member_address(base, member, *through_pointer, context)?;
+                self.instructions.push("LoadI helper_addr".to_string());
+                Ok(())
             }
+            Expression::ArrayInitializer { .. } => Err(CompilerError::semantic(
+                "array initializer should not be emitted directly".to_string(),
+            )),
         }
     }
 
@@ -537,6 +593,25 @@ impl MarieEmitter {
                 let element_label = format!("{}_elem_{}", label, index);
                 let value = initial_values.get(index).copied().unwrap_or(0);
                 self.data.push(format!("{}, DEC {}", element_label, value));
+            }
+            return;
+        }
+
+        if let Type::Struct { fields, .. } = ty {
+            if fields.is_empty() {
+                self.data.push(format!("{}, DEC 0", label));
+                return;
+            }
+
+            let first_field_label = format!("{}_field_0", label);
+            self.data
+                .push(format!("{}, ADR {}", label, first_field_label));
+
+            let mut offset = 0usize;
+            for field in fields {
+                let field_label = format!("{}_field_{}_{}", label, offset, field.name);
+                self.emit_storage_for_declarator(&field_label, &field.ty, None);
+                offset += self.type_word_size(&field.ty);
             }
             return;
         }
@@ -633,6 +708,246 @@ impl MarieEmitter {
         Ok(())
     }
 
+    fn emit_member_address(
+        &mut self,
+        base: &Expression,
+        member: &str,
+        through_pointer: bool,
+        context: &mut FunctionEmitContext<'_>,
+    ) -> Result<(), CompilerError> {
+        self.ensure_index_cells();
+
+        let base_struct_type = if through_pointer {
+            let pointer_type = self.expression_type(base, context)?;
+            let Type::Pointer(inner) = pointer_type else {
+                return Err(CompilerError::semantic(
+                    "pointer member access requires pointer base",
+                ));
+            };
+            self.resolve_type(&inner)?
+        } else {
+            self.resolve_type(&self.expression_type(base, context)?)?
+        };
+
+        let Type::Struct { fields, .. } = base_struct_type else {
+            return Err(CompilerError::semantic(
+                "member access requires struct base type",
+            ));
+        };
+
+        let mut offset = 0usize;
+        let mut found = false;
+        for field in &fields {
+            if field.name == member {
+                found = true;
+                break;
+            }
+            offset += self.type_word_size(&field.ty);
+        }
+
+        if !found {
+            return Err(CompilerError::semantic(format!(
+                "unknown struct member '{}'",
+                member
+            )));
+        }
+
+        if through_pointer {
+            self.emit_expression(base, context)?;
+        } else {
+            self.emit_lvalue_address(base, context)?;
+            self.instructions.push("Load helper_addr".to_string());
+        }
+
+        if offset > 0 {
+            let offset_label = self.ensure_int_const(offset as i64);
+            self.instructions.push(format!("Add {}", offset_label));
+        }
+        self.instructions.push("Store helper_addr".to_string());
+        Ok(())
+    }
+
+    fn emit_lvalue_address(
+        &mut self,
+        expression: &Expression,
+        context: &mut FunctionEmitContext<'_>,
+    ) -> Result<(), CompilerError> {
+        self.ensure_index_cells();
+        match expression {
+            Expression::Identifier { name, .. } => {
+                let label = self.resolve_symbol_label(context, name)?;
+                let addr_label = self.ensure_addr_const(&label);
+                self.push_instructions([
+                    format!("Load {}", addr_label),
+                    "Store helper_addr".to_string(),
+                ]);
+                Ok(())
+            }
+            Expression::Index { base, index, .. } => self.emit_index_address(base, index, context),
+            Expression::Unary {
+                op: crate::ast::UnaryOp::Dereference,
+                expr,
+                ..
+            } => {
+                self.emit_expression(expr, context)?;
+                self.instructions.push("Store helper_addr".to_string());
+                Ok(())
+            }
+            Expression::MemberAccess {
+                base,
+                member,
+                through_pointer,
+                ..
+            } => self.emit_member_address(base, member, *through_pointer, context),
+            _ => Err(CompilerError::semantic(
+                "unsupported lvalue expression for address calculation",
+            )),
+        }
+    }
+
+    fn expression_type(
+        &self,
+        expression: &Expression,
+        context: &FunctionEmitContext<'_>,
+    ) -> Result<Type, CompilerError> {
+        match expression {
+            Expression::Identifier { name, .. } => self.resolve_symbol_type(context, name),
+            Expression::IntegerLiteral { .. } => Ok(Type::Builtin(crate::ast::BuiltinType::Int)),
+            Expression::Unary { op, expr, .. } => match op {
+                crate::ast::UnaryOp::AddressOf => {
+                    Ok(Type::Pointer(Box::new(self.expression_type(expr, context)?)))
+                }
+                crate::ast::UnaryOp::Dereference => {
+                    let inner = self.expression_type(expr, context)?;
+                    let Type::Pointer(pointee) = inner else {
+                        return Err(CompilerError::semantic(
+                            "dereference requires pointer expression",
+                        ));
+                    };
+                    Ok(*pointee)
+                }
+                crate::ast::UnaryOp::Plus
+                | crate::ast::UnaryOp::Minus
+                | crate::ast::UnaryOp::LogicalNot => self.expression_type(expr, context),
+            },
+            Expression::Binary { lhs, op, rhs, .. } => {
+                use crate::ast::BinaryOp;
+                match op {
+                    BinaryOp::Add | BinaryOp::Subtract => {
+                        let left = self.expression_type(lhs, context)?;
+                        let right = self.expression_type(rhs, context)?;
+                        if matches!(left, Type::Pointer(_)) {
+                            Ok(left)
+                        } else if matches!(right, Type::Pointer(_)) && *op == BinaryOp::Add {
+                            Ok(right)
+                        } else {
+                            Ok(left)
+                        }
+                    }
+                    BinaryOp::Multiply
+                    | BinaryOp::Modulo
+                    | BinaryOp::Equal
+                    | BinaryOp::NotEqual
+                    | BinaryOp::Less
+                    | BinaryOp::LessEqual
+                    | BinaryOp::Greater
+                    | BinaryOp::GreaterEqual
+                    | BinaryOp::LogicalAnd
+                    | BinaryOp::LogicalOr
+                    | BinaryOp::Divide
+                    | BinaryOp::ShiftLeft
+                    | BinaryOp::ShiftRight
+                    | BinaryOp::BitwiseAnd
+                    | BinaryOp::BitwiseOr
+                    | BinaryOp::BitwiseXor => Ok(Type::Builtin(crate::ast::BuiltinType::Int)),
+                }
+            }
+            Expression::Assignment { target, .. } => self.expression_type(target, context),
+            Expression::Call { callee, .. } => {
+                let callee_ty = self.expression_type(callee, context)?;
+                if let Type::Function { return_type, .. } = callee_ty {
+                    Ok(*return_type)
+                } else {
+                    Ok(Type::Builtin(crate::ast::BuiltinType::Int))
+                }
+            }
+            Expression::Index { base, .. } => {
+                let base_ty = self.expression_type(base, context)?;
+                match base_ty {
+                    Type::Array { element, .. } => Ok(*element),
+                    Type::Pointer(element) => Ok(*element),
+                    _ => Err(CompilerError::semantic(
+                        "indexing requires array or pointer base",
+                    )),
+                }
+            }
+            Expression::ArrayInitializer { elements, .. } => {
+                let element_ty = if let Some(first) = elements.first() {
+                    self.expression_type(first, context)?
+                } else {
+                    Type::Builtin(crate::ast::BuiltinType::Int)
+                };
+                Ok(Type::Array {
+                    element: Box::new(element_ty),
+                    size: Some(crate::ast::ConstExpr {
+                        value: elements.len() as i64,
+                    }),
+                })
+            }
+            Expression::MemberAccess {
+                base,
+                member,
+                through_pointer,
+                ..
+            } => {
+                let base_ty = self.expression_type(base, context)?;
+                let struct_ty = if *through_pointer {
+                    let Type::Pointer(inner) = base_ty else {
+                        return Err(CompilerError::semantic(
+                            "arrow access requires pointer base",
+                        ));
+                    };
+                    self.resolve_type(&inner)?
+                } else {
+                    self.resolve_type(&base_ty)?
+                };
+
+                let Type::Struct { fields, .. } = struct_ty else {
+                    return Err(CompilerError::semantic(
+                        "member access requires struct type",
+                    ));
+                };
+
+                let Some(field) = fields.iter().find(|field| field.name == *member) else {
+                    return Err(CompilerError::semantic(format!(
+                        "unknown struct member '{}'",
+                        member
+                    )));
+                };
+
+                self.resolve_type(&field.ty)
+            }
+        }
+    }
+
+    fn type_word_size(&self, ty: &Type) -> usize {
+        match ty {
+            Type::Builtin(_) | Type::Pointer(_) | Type::Function { .. } => 1,
+            Type::Array { element, size } => {
+                let count = size
+                    .and_then(|const_expr| usize::try_from(const_expr.value).ok())
+                    .filter(|count| *count > 0)
+                    .unwrap_or(1);
+                count.saturating_mul(self.type_word_size(element))
+            }
+            Type::Struct { fields, .. } => fields
+                .iter()
+                .map(|field| self.type_word_size(&field.ty))
+                .sum::<usize>()
+                .max(1),
+        }
+    }
+
     fn emit_address_of(
         &mut self,
         expression: &Expression,
@@ -649,6 +964,16 @@ impl MarieEmitter {
             }
             Expression::Index { base, index, .. } => {
                 self.emit_index_address(base, index, context)?;
+                self.instructions.push("Load helper_addr".to_string());
+                Ok(())
+            }
+            Expression::MemberAccess {
+                base,
+                member,
+                through_pointer,
+                ..
+            } => {
+                self.emit_member_address(base, member, *through_pointer, context)?;
                 self.instructions.push("Load helper_addr".to_string());
                 Ok(())
             }
@@ -893,8 +1218,8 @@ impl MarieEmitter {
         name: &str,
     ) -> Result<String, CompilerError> {
         for scope in context.scopes.iter().rev() {
-            if let Some(label) = scope.get(name) {
-                return Ok(label.clone());
+            if let Some(binding) = scope.get(name) {
+                return Ok(binding.label.clone());
             }
         }
 
@@ -906,6 +1231,111 @@ impl MarieEmitter {
             "unresolved symbol '{}' during codegen",
             name
         )))
+    }
+
+    fn resolve_symbol_type(
+        &self,
+        context: &FunctionEmitContext<'_>,
+        name: &str,
+    ) -> Result<Type, CompilerError> {
+        for scope in context.scopes.iter().rev() {
+            if let Some(binding) = scope.get(name) {
+                return Ok(binding.ty.clone());
+            }
+        }
+
+        if let Some(global_ty) = self.global_types.get(name) {
+            return Ok(global_ty.clone());
+        }
+
+        if self.functions.contains_key(name) {
+            return Ok(Type::Function {
+                return_type: Box::new(Type::Builtin(crate::ast::BuiltinType::Int)),
+                params: Vec::new(),
+            });
+        }
+
+        Err(CompilerError::semantic(format!(
+            "unresolved symbol type '{}' during codegen",
+            name
+        )))
+    }
+
+    fn register_structs_from_type(&mut self, ty: &Type) {
+        match ty {
+            Type::Pointer(inner) => self.register_structs_from_type(inner),
+            Type::Array { element, .. } => self.register_structs_from_type(element),
+            Type::Function {
+                return_type,
+                params,
+            } => {
+                self.register_structs_from_type(return_type);
+                for parameter in params {
+                    self.register_structs_from_type(&parameter.ty);
+                }
+            }
+            Type::Struct { name, fields } => {
+                for field in fields {
+                    self.register_structs_from_type(&field.ty);
+                }
+                if !fields.is_empty() {
+                    self.struct_definitions
+                        .entry(name.clone())
+                        .or_insert_with(|| fields.clone());
+                }
+            }
+            Type::Builtin(_) => {}
+        }
+    }
+
+    fn resolve_type(&self, ty: &Type) -> Result<Type, CompilerError> {
+        match ty {
+            Type::Builtin(_) => Ok(ty.clone()),
+            Type::Pointer(inner) => Ok(Type::Pointer(Box::new(self.resolve_type(inner)?))),
+            Type::Array { element, size } => Ok(Type::Array {
+                element: Box::new(self.resolve_type(element)?),
+                size: *size,
+            }),
+            Type::Function {
+                return_type,
+                params,
+            } => {
+                let mut resolved_params = Vec::with_capacity(params.len());
+                for parameter in params {
+                    resolved_params.push(Parameter {
+                        name: parameter.name.clone(),
+                        ty: self.resolve_type(&parameter.ty)?,
+                        location: parameter.location,
+                    });
+                }
+                Ok(Type::Function {
+                    return_type: Box::new(self.resolve_type(return_type)?),
+                    params: resolved_params,
+                })
+            }
+            Type::Struct { name, fields } => {
+                let concrete_fields = if fields.is_empty() {
+                    self.struct_definitions.get(name).cloned().ok_or_else(|| {
+                        CompilerError::semantic(format!("unknown struct type '{}'", name))
+                    })?
+                } else {
+                    fields.clone()
+                };
+
+                let mut resolved_fields = Vec::with_capacity(concrete_fields.len());
+                for field in concrete_fields {
+                    resolved_fields.push(StructField {
+                        name: field.name,
+                        ty: self.resolve_type(&field.ty)?,
+                    });
+                }
+
+                Ok(Type::Struct {
+                    name: name.clone(),
+                    fields: resolved_fields,
+                })
+            }
+        }
     }
 
     fn next_label_id(&mut self) -> usize {

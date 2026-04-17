@@ -1244,3 +1244,17 @@ fn emits_local_array_initializer_values_in_data() {
     assert!(output.contains("_msg_elem_4, DEC 111"));
     assert!(output.contains("_msg_elem_5, DEC 0"));
 }
+
+#[test]
+fn emits_struct_member_load_and_store() {
+    let source = "struct Point { int x; int y; } p; int main(void) { p.x = 9; return p.y + p.x; }";
+    let unit = crate::parser::CParser::new()
+        .parse_translation_unit(source)
+        .expect("source should parse");
+
+    let output = MarieCodegen.emit(&unit).expect("codegen should succeed");
+
+    assert!(output.contains("g_p, ADR"));
+    assert!(output.contains("StoreI helper_addr"));
+    assert!(output.contains("LoadI helper_addr"));
+}

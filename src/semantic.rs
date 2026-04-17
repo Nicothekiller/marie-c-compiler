@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use crate::ast::{
     Block, BlockItem, BuiltinType, ConstExpr, Expression, ExternalDeclaration, FunctionDeclaration,
-    TranslationUnit, Type, UnaryOp,
+    StructField, TranslationUnit, Type, UnaryOp,
 };
 use crate::error::CompilerError;
 
@@ -13,6 +13,8 @@ pub struct SemanticInfo {
     pub function_signatures: HashMap<String, FunctionSignature>,
     /// Collected global variable types indexed by symbol name.
     pub global_symbols: HashMap<String, Type>,
+    /// Collected struct definitions indexed by tag name.
+    pub struct_definitions: HashMap<String, Vec<StructField>>,
 }
 
 /// Function signature metadata collected during semantic analysis.
@@ -43,10 +45,36 @@ impl SemanticAnalyzer {
     pub fn analyze(&self, unit: &TranslationUnit) -> Result<SemanticInfo, CompilerError> {
         let mut info = SemanticInfo::default();
 
+        self.collect_struct_definitions(unit, &mut info)?;
         self.collect_top_level_symbols(unit, &mut info)?;
         self.analyze_functions(unit, &info)?;
 
         Ok(info)
+    }
+
+    fn collect_struct_definitions(
+        &self,
+        unit: &TranslationUnit,
+        info: &mut SemanticInfo,
+    ) -> Result<(), CompilerError> {
+        for item in &unit.top_level_items {
+            match item {
+                ExternalDeclaration::GlobalDeclaration(declaration) => {
+                    for declarator in &declaration.declarators {
+                        register_structs_from_type(&declarator.ty, info)?;
+                    }
+                }
+                ExternalDeclaration::Function(function) => {
+                    register_structs_from_type(&function.return_type, info)?;
+                    for parameter in &function.params {
+                        register_structs_from_type(&parameter.ty, info)?;
+                    }
+                    collect_structs_from_block(&function.body, info)?;
+                }
+            }
+        }
+
+        Ok(())
     }
 
     /// Analyzes all function definitions in the translation unit.
@@ -122,6 +150,8 @@ impl SemanticAnalyzer {
             match item {
                 ExternalDeclaration::GlobalDeclaration(declaration) => {
                     for declarator in &declaration.declarators {
+                        let declared_ty = resolve_type(&declarator.ty, info)?;
+
                         if info.global_symbols.contains_key(&declarator.name)
                             || info.function_signatures.contains_key(&declarator.name)
                         {
@@ -140,7 +170,7 @@ impl SemanticAnalyzer {
                                 return_type: Type::Builtin(BuiltinType::Void),
                             };
                             let init_info = analyze_expression(&global_context, initializer, info)?;
-                            if !initializer_types_compatible(&declarator.ty, &init_info.ty) {
+                            if !initializer_types_compatible(&declared_ty, &init_info.ty) {
                                 return Err(CompilerError::semantic_with_location(
                                     "initializer type is incompatible with declaration type",
                                     initializer.location(),
@@ -149,7 +179,7 @@ impl SemanticAnalyzer {
                         }
 
                         info.global_symbols
-                            .insert(declarator.name.clone(), declarator.ty.clone());
+                            .insert(declarator.name.clone(), declared_ty);
                     }
                 }
                 ExternalDeclaration::Function(function) => {
@@ -237,10 +267,11 @@ fn analyze_block(
         match item {
             BlockItem::Declaration(declaration) => {
                 for declarator in &declaration.declarators {
-                    declare_in_current_scope(context, &declarator.name, &declarator.ty)?;
+                    let declared_ty = resolve_type(&declarator.ty, info)?;
+                    declare_in_current_scope(context, &declarator.name, &declared_ty)?;
                     if let Some(initializer) = &declarator.initializer {
                         let init_info = analyze_expression(context, initializer, info)?;
-                        if !initializer_types_compatible(&declarator.ty, &init_info.ty) {
+                        if !initializer_types_compatible(&declared_ty, &init_info.ty) {
                             return Err(CompilerError::semantic_with_location(
                                 "initializer type is incompatible with declaration type",
                                 initializer.location(),
@@ -545,6 +576,12 @@ fn analyze_expression(
                     *location,
                 ));
             }
+            if is_struct_like(&left.ty) {
+                return Err(CompilerError::semantic_with_location(
+                    "struct assignment is not supported in current subset",
+                    *location,
+                ));
+            }
             if !types_compatible(&left.ty, &right.ty) {
                 return Err(CompilerError::semantic_with_location(
                     "assignment types are incompatible",
@@ -671,6 +708,177 @@ fn analyze_expression(
                 is_lvalue: false,
             })
         }
+        Expression::MemberAccess {
+            base,
+            member,
+            through_pointer,
+            location,
+        } => {
+            let base_info = analyze_expression(context, base, info)?;
+            let struct_type = if *through_pointer {
+                match base_info.ty {
+                    Type::Pointer(inner) => resolve_type(inner.as_ref(), info)?,
+                    _ => {
+                        return Err(CompilerError::semantic_with_location(
+                            "pointer member access requires pointer to struct",
+                            *location,
+                        ));
+                    }
+                }
+            } else {
+                resolve_type(&base_info.ty, info)?
+            };
+
+            let Type::Struct { fields, .. } = struct_type else {
+                return Err(CompilerError::semantic_with_location(
+                    "member access requires struct base",
+                    *location,
+                ));
+            };
+
+            let Some(field) = fields.iter().find(|field| field.name == *member) else {
+                return Err(CompilerError::semantic_with_location(
+                    format!("unknown struct member '{}'", member),
+                    *location,
+                ));
+            };
+
+            Ok(ExprInfo {
+                ty: resolve_type(&field.ty, info)?,
+                is_lvalue: true,
+            })
+        }
+    }
+}
+
+fn collect_structs_from_block(block: &Block, info: &mut SemanticInfo) -> Result<(), CompilerError> {
+    for item in &block.items {
+        match item {
+            BlockItem::Declaration(declaration) => {
+                for declarator in &declaration.declarators {
+                    register_structs_from_type(&declarator.ty, info)?;
+                }
+            }
+            BlockItem::Statement(statement) => collect_structs_from_statement(statement, info)?,
+        }
+    }
+
+    Ok(())
+}
+
+fn collect_structs_from_statement(
+    statement: &crate::ast::Statement,
+    info: &mut SemanticInfo,
+) -> Result<(), CompilerError> {
+    match statement {
+        crate::ast::Statement::Block(block) => collect_structs_from_block(block, info),
+        crate::ast::Statement::If {
+            then_branch,
+            else_branch,
+            ..
+        } => {
+            collect_structs_from_statement(then_branch, info)?;
+            if let Some(else_branch) = else_branch {
+                collect_structs_from_statement(else_branch, info)?;
+            }
+            Ok(())
+        }
+        crate::ast::Statement::While { body, .. } => collect_structs_from_statement(body, info),
+        crate::ast::Statement::For { body, .. } => collect_structs_from_statement(body, info),
+        crate::ast::Statement::Return(_)
+        | crate::ast::Statement::Expression(_)
+        | crate::ast::Statement::InlineAsm(_) => Ok(()),
+    }
+}
+
+fn register_structs_from_type(ty: &Type, info: &mut SemanticInfo) -> Result<(), CompilerError> {
+    match ty {
+        Type::Pointer(inner) => register_structs_from_type(inner, info),
+        Type::Array { element, .. } => register_structs_from_type(element, info),
+        Type::Function {
+            return_type,
+            params,
+        } => {
+            register_structs_from_type(return_type, info)?;
+            for param in params {
+                register_structs_from_type(&param.ty, info)?;
+            }
+            Ok(())
+        }
+        Type::Struct { name, fields } => {
+            for field in fields {
+                register_structs_from_type(&field.ty, info)?;
+            }
+
+            if fields.is_empty() {
+                return Ok(());
+            }
+
+            if let Some(existing) = info.struct_definitions.get(name) {
+                if existing != fields {
+                    return Err(CompilerError::semantic(format!(
+                        "conflicting definition for struct '{}'",
+                        name
+                    )));
+                }
+                return Ok(());
+            }
+
+            info.struct_definitions
+                .insert(name.clone(), fields.clone());
+            Ok(())
+        }
+        Type::Builtin(_) => Ok(()),
+    }
+}
+
+fn resolve_type(ty: &Type, info: &SemanticInfo) -> Result<Type, CompilerError> {
+    match ty {
+        Type::Builtin(_) => Ok(ty.clone()),
+        Type::Pointer(inner) => Ok(Type::Pointer(Box::new(resolve_type(inner, info)?))),
+        Type::Array { element, size } => Ok(Type::Array {
+            element: Box::new(resolve_type(element, info)?),
+            size: *size,
+        }),
+        Type::Function {
+            return_type,
+            params,
+        } => {
+            let mut resolved_params = Vec::with_capacity(params.len());
+            for param in params {
+                resolved_params.push(crate::ast::Parameter {
+                    name: param.name.clone(),
+                    ty: resolve_type(&param.ty, info)?,
+                    location: param.location,
+                });
+            }
+            Ok(Type::Function {
+                return_type: Box::new(resolve_type(return_type, info)?),
+                params: resolved_params,
+            })
+        }
+        Type::Struct { name, fields } => {
+            let canonical_fields = if fields.is_empty() {
+                info.struct_definitions.get(name).cloned().ok_or_else(|| {
+                    CompilerError::semantic(format!("unknown struct type '{}'", name))
+                })?
+            } else {
+                fields.clone()
+            };
+
+            let mut resolved_fields = Vec::with_capacity(canonical_fields.len());
+            for field in canonical_fields {
+                resolved_fields.push(StructField {
+                    name: field.name,
+                    ty: resolve_type(&field.ty, info)?,
+                });
+            }
+
+            Ok(Type::Struct {
+                name: name.clone(),
+                fields: resolved_fields,
+            })
+        }
     }
 }
 
@@ -748,6 +956,10 @@ fn is_scalar_like(ty: &Type) -> bool {
     is_integer_like(ty) || matches!(ty, Type::Pointer(_))
 }
 
+fn is_struct_like(ty: &Type) -> bool {
+    matches!(ty, Type::Struct { .. })
+}
+
 /// Returns result type for pointer addition if operands are compatible.
 fn pointer_add_result_type(left: &Type, right: &Type) -> Option<Type> {
     if matches!(left, Type::Pointer(_)) && is_integer_like(right) {
@@ -817,11 +1029,18 @@ fn types_compatible(left: &Type, right: &Type) -> bool {
         (Type::Builtin(l), Type::Builtin(r)) => {
             matches!((l, r), (BuiltinType::Int, BuiltinType::Char) | (BuiltinType::Char, BuiltinType::Int))
         }
+        (Type::Struct { name: left_name, .. }, Type::Struct { name: right_name, .. }) => {
+            left_name == right_name
+        }
         _ => false,
     }
 }
 
 fn initializer_types_compatible(declared: &Type, initializer: &Type) -> bool {
+    if matches!(declared, Type::Struct { .. }) {
+        return false;
+    }
+
     match (declared, initializer) {
         (
             Type::Array {
@@ -846,6 +1065,7 @@ fn is_lvalue(expression: &Expression) -> bool {
         expression,
         Expression::Identifier { .. }
             | Expression::Index { .. }
+            | Expression::MemberAccess { .. }
             | Expression::Unary {
                 op: UnaryOp::Dereference,
                 ..
@@ -1365,5 +1585,28 @@ mod tests {
     fn accepts_void_marker_parameter_second_case() {
         let result = analyze_source("void noop(void) { return; } int main(void) { return 0; }");
         assert!(result.is_ok(), "void marker parameter should be accepted");
+    }
+
+    #[test]
+    fn accepts_struct_member_access() {
+        let result = analyze_source(
+            "struct Point { int x; int y; } p; int main(void) { p.x = 7; return p.y + p.x; }",
+        );
+        assert!(result.is_ok(), "struct member access should be accepted");
+    }
+
+    #[test]
+    fn rejects_unknown_struct_member() {
+        assert_semantic_fails(
+            "struct Point { int x; int y; } p; int main(void) { return p.z; }",
+        );
+    }
+
+    #[test]
+    fn accepts_arrow_member_access() {
+        let result = analyze_source(
+            "struct Point { int x; int y; } p; int main(void) { struct Point *q; q = &p; return q->x; }",
+        );
+        assert!(result.is_ok(), "arrow member access should be accepted");
     }
 }
