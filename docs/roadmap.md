@@ -30,7 +30,7 @@ The compiler already supports a substantial C subset including:
 - Semantic: Validate lvalue, check for undefined variables
 - Codegen: Convert to add/subtract with 1
 
-#### Ternary Conditional (`?:>)
+#### Ternary Conditional (`?:`)
 - Syntax: `cond ? expr1 : expr2`
 - AST: Add `Ternary` variant to `Expression` enum
 - Codegen: Lower using br/breq to conditional jump
@@ -66,9 +66,9 @@ The compiler already supports a substantial C subset including:
 - Codegen: Jump table or if-chain lowering
 
 #### `typedef` Semantics
-- Currently parses but doesn't create type aliases
-- Implement: Build typedef table during semantic analysis
-- Use resolved types in declarations
+- Status: Implemented for global typedefs
+- Local typedefs inside function bodies are rejected
+- Already has typedef table, type resolution, circular reference detection
 
 #### Function Prototypes
 - Syntax: `int foo(int a, int b);` (without body)

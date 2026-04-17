@@ -53,6 +53,8 @@ pub enum Type {
     },
     /// Typedef alias by name.
     Alias(String),
+    /// Const-qualified type (`const T`).
+    Const(Box<Type>),
 }
 
 /// Struct field declaration entry.

@@ -37,6 +37,11 @@ pub trait TargetValidation {
     fn unsupported_storage_classes(&self) -> &'static [fn() -> crate::ast::StorageClass] {
         &[|| crate::ast::StorageClass::Static]
     }
+
+    /// Checks for unsupported type qualifiers.
+    fn unsupported_type_qualifiers(&self) -> &'static [fn() -> crate::ast::Type] {
+        &[|| crate::ast::Type::Const(Box::new(crate::ast::Type::Builtin(crate::ast::BuiltinType::Int)))]
+    }
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -68,6 +73,7 @@ impl TargetValidation for MarieCodegen {
             self.unsupported_binary_ops(),
             self.unsupported_statement_kinds(),
             self.unsupported_storage_classes(),
+            self.unsupported_type_qualifiers(),
         )
     }
 }

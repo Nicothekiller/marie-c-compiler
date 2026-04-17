@@ -1,5 +1,5 @@
 use crate::ast::{
-    BinaryOp, Block, BlockItem, Expression, ExternalDeclaration, Statement, TranslationUnit,
+    BinaryOp, Block, BlockItem, Expression, ExternalDeclaration, Statement, TranslationUnit, Type,
 };
 use crate::error::CompilerError;
 
@@ -8,6 +8,7 @@ pub(crate) fn validate_ast(
     unsupported_ops: &[BinaryOp],
     _unsupported_stmts: &[fn() -> Statement],
     unsupported_storage: &[fn() -> crate::ast::StorageClass],
+    unsupported_type_quals: &[fn() -> Type],
 ) -> Result<(), CompilerError> {
     for item in &ast.top_level_items {
         match item {
@@ -28,11 +29,43 @@ pub(crate) fn validate_ast(
                     if let Some(init) = &decl.initializer {
                         validate_expression(init, unsupported_ops)?;
                     }
+                    for unsupported in unsupported_type_quals {
+                        let qual = unsupported();
+                        if type_contains_qualifier(&decl.ty, &qual) {
+                            return Err(CompilerError::unsupported_at(
+                                "const qualifier not supported by target",
+                                crate::error::SourceLocation { line: 1, column: 1 },
+                            ));
+                        }
+                    }
                 }
             }
         }
     }
     Ok(())
+}
+
+fn type_contains_qualifier(ty: &Type, qual: &Type) -> bool {
+    match (ty, qual) {
+        (_, Type::Const(_)) => matches!(ty, Type::Const(_)),
+        (Type::Const(inner), _) => type_contains_qualifier(inner, qual),
+        (Type::Pointer(inner), _) => type_contains_qualifier(inner, qual),
+        (Type::Array { element, .. }, _) => type_contains_qualifier(element, qual),
+        (
+            Type::Function {
+                return_type,
+                params,
+            },
+            _,
+        ) => {
+            type_contains_qualifier(return_type, qual)
+                || params.iter().any(|p| type_contains_qualifier(&p.ty, qual))
+        }
+        (Type::Struct { fields, .. }, _) => {
+            fields.iter().any(|f| type_contains_qualifier(&f.ty, qual))
+        }
+        (Type::Enum { .. }, _) | (Type::Builtin(_), _) | (Type::Alias(_), _) => false,
+    }
 }
 
 fn validate_block(block: &Block, unsupported_ops: &[BinaryOp]) -> Result<(), CompilerError> {

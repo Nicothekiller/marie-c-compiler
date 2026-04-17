@@ -981,6 +981,7 @@ impl MarieEmitter {
             }
             Type::Enum { .. } => 1,
             Type::Builtin(_) | Type::Pointer(_) | Type::Function { .. } => 1,
+            Type::Const(inner) => self.type_word_size(inner),
             Type::Array { element, size } => {
                 let count = size
                     .and_then(|const_expr| usize::try_from(const_expr.value).ok())
@@ -1345,6 +1346,7 @@ impl MarieEmitter {
                 }
             }
             Type::Builtin(_) => {}
+            Type::Const(inner) => self.register_structs_from_type(inner),
         }
     }
 
@@ -1379,6 +1381,7 @@ impl MarieEmitter {
                     }
                 }
             }
+            Type::Const(inner) => self.register_enums_from_type(inner),
         }
     }
 
@@ -1475,6 +1478,9 @@ impl MarieEmitter {
                     fields: resolved_fields,
                 })
             }
+            Type::Const(inner) => Ok(Type::Const(Box::new(
+                self.resolve_type_with_visited(inner, visited)?,
+            ))),
         }
     }
 

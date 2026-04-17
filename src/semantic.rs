@@ -936,6 +936,7 @@ fn register_enums_from_type(ty: &Type, info: &mut SemanticInfo) -> Result<(), Co
                 .insert(name.clone(), variants.clone());
             Ok(())
         }
+        Type::Const(inner) => register_enums_from_type(inner, info),
     }
 }
 
@@ -999,11 +1000,12 @@ fn register_structs_from_type(ty: &Type, info: &mut SemanticInfo) -> Result<(), 
                 return Ok(());
             }
 
-            info.struct_definitions
+info.struct_definitions
                 .insert(name.clone(), fields.clone());
             Ok(())
         }
         Type::Builtin(_) => Ok(()),
+        Type::Const(inner) => register_structs_from_type(inner, info),
     }
 }
 
@@ -1106,6 +1108,11 @@ fn resolve_type_with_visited(
                 fields: resolved_fields,
             })
         }
+        Type::Const(inner) => Ok(Type::Const(Box::new(resolve_type_with_visited(
+            inner,
+            info,
+            visited_aliases,
+        )?))),
     }
 }
 

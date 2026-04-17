@@ -187,9 +187,15 @@ fn parse_declaration_specifiers(
 ) -> Result<(Option<StorageClass>, Type), CompilerError> {
     let mut storage_class = None;
     let mut base_type = None;
+    let mut is_const = false;
 
     for item in pair.into_inner() {
         match item.as_rule() {
+            Rule::type_qualifier => {
+                if item.as_str() == "const" {
+                    is_const = true;
+                }
+            }
             Rule::storage_class_specifier => {
                 storage_class = Some(parse_storage_class_specifier(item)?);
             }
@@ -203,7 +209,13 @@ fn parse_declaration_specifiers(
     let base_type =
         base_type.ok_or_else(|| CompilerError::parse("missing type specifier".to_string()))?;
 
-    Ok((storage_class, base_type))
+    let final_type = if is_const {
+        Type::Const(Box::new(base_type))
+    } else {
+        base_type
+    };
+
+    Ok((storage_class, final_type))
 }
 
 fn parse_storage_class_specifier(pair: Pair<'_, Rule>) -> Result<StorageClass, CompilerError> {
