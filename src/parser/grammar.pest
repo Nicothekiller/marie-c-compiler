@@ -14,13 +14,17 @@ declaration_specifiers = { storage_class_specifier? ~ type_specifier }
 
 storage_class_specifier = { kw_static | kw_typedef }
 
-type_specifier = { struct_specifier | kw_void | kw_char | kw_int | typedef_type }
+type_specifier = { enum_specifier | struct_specifier | kw_void | kw_char | kw_int | typedef_type }
 typedef_type = { ident }
 
 struct_specifier = { kw_struct ~ ident ~ ("{" ~ struct_declaration+ ~ "}")? }
 struct_declaration = { declaration_specifiers ~ struct_declarator_list ~ ";" }
 struct_declarator_list = { struct_declarator ~ ("," ~ struct_declarator)* }
 struct_declarator = { declarator }
+
+enum_specifier = { kw_enum ~ ident ~ ("{" ~ enum_enumerator_list ~ "}")? }
+enum_enumerator_list = { enum_enumerator ~ ("," ~ enum_enumerator)* ~ ","? }
+enum_enumerator = { ident ~ ("=" ~ assignment_expression)? }
 
 init_declarator_list = { init_declarator ~ ("," ~ init_declarator)* }
 init_declarator = { declarator ~ ("=" ~ initializer)? }
@@ -144,6 +148,7 @@ kw_void = @{ "void" ~ !id_continue }
 kw_char = @{ "char" ~ !id_continue }
 kw_int = @{ "int" ~ !id_continue }
 kw_struct = @{ "struct" ~ !id_continue }
+kw_enum = @{ "enum" ~ !id_continue }
 kw_asm = @{ "__asm(" }
 
 asm_args = { string_literal ~ ("," ~ string_literal)* }
@@ -175,6 +180,7 @@ keyword = {
     | kw_char
     | kw_int
     | kw_struct
+    | kw_enum
     | kw_asm
 }
 

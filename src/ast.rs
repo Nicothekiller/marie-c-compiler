@@ -46,6 +46,11 @@ pub enum Type {
         name: String,
         fields: Vec<StructField>,
     },
+    /// Enum type (`enum Name { A, B=3, ... }` or `enum Name`).
+    Enum {
+        name: String,
+        variants: Vec<EnumVariant>,
+    },
     /// Typedef alias by name.
     Alias(String),
 }
@@ -55,6 +60,13 @@ pub enum Type {
 pub struct StructField {
     pub name: String,
     pub ty: Type,
+}
+
+/// Enum variant with resolved constant value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnumVariant {
+    pub name: String,
+    pub value: i64,
 }
 
 /// Compile-time integer expression placeholder for declarator sizes.

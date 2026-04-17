@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
 use crate::ast::{
-    Block, Expression, ExternalDeclaration, FunctionDeclaration, Parameter, Statement, StructField,
-    TranslationUnit, Type,
+    Block, EnumVariant, Expression, ExternalDeclaration, FunctionDeclaration, Parameter, Statement,
+    StructField, TranslationUnit, Type,
 };
 use crate::error::CompilerError;
 
@@ -15,6 +15,8 @@ pub(crate) struct MarieEmitter {
     global_types: HashMap<String, Type>,
     typedefs: HashMap<String, Type>,
     struct_definitions: HashMap<String, Vec<StructField>>,
+    enum_definitions: HashMap<String, Vec<EnumVariant>>,
+    enum_constants: HashMap<String, i64>,
     int_consts: HashMap<i64, String>,
     addr_consts: HashMap<String, String>,
     label_counter: usize,
@@ -93,11 +95,13 @@ impl MarieEmitter {
             match item {
                 ExternalDeclaration::TypeDeclaration(ty) => {
                     self.register_structs_from_type(ty);
+                    self.register_enums_from_type(ty);
                 }
                 ExternalDeclaration::GlobalDeclaration(declaration) => {
                     if matches!(declaration.storage_class, Some(crate::ast::StorageClass::Typedef)) {
                         for declarator in &declaration.declarators {
                             self.register_structs_from_type(&declarator.ty);
+                            self.register_enums_from_type(&declarator.ty);
                             let resolved = self
                                 .resolve_type(&declarator.ty)
                                 .unwrap_or_else(|_| declarator.ty.clone());
@@ -107,6 +111,7 @@ impl MarieEmitter {
                     }
                     for declarator in &declaration.declarators {
                         self.register_structs_from_type(&declarator.ty);
+                        self.register_enums_from_type(&declarator.ty);
                         self.globals
                             .insert(declarator.name.clone(), format!("g_{}", declarator.name));
                         let resolved_or_raw = self
@@ -118,6 +123,7 @@ impl MarieEmitter {
                 }
                 ExternalDeclaration::Function(function) => {
                     self.register_structs_from_type(&function.return_type);
+                    self.register_enums_from_type(&function.return_type);
                     let labels = FunctionLabels {
                         entry: format!("fn_{}", function.name),
                         body: format!("fn_{}_body", function.name),
@@ -140,6 +146,7 @@ impl MarieEmitter {
 
                     for parameter in &function.params {
                         self.register_structs_from_type(&parameter.ty);
+                        self.register_enums_from_type(&parameter.ty);
                     }
                 }
             }
@@ -382,8 +389,13 @@ impl MarieEmitter {
     ) -> Result<(), CompilerError> {
         match expression {
             Expression::Identifier { name, .. } => {
-                let label = self.resolve_symbol_label(context, name)?;
-                self.instructions.push(format!("Load {}", label));
+                if let Some(enum_value) = self.enum_constants.get(name) {
+                    let label = self.ensure_int_const(*enum_value);
+                    self.instructions.push(format!("Load {}", label));
+                } else {
+                    let label = self.resolve_symbol_label(context, name)?;
+                    self.instructions.push(format!("Load {}", label));
+                }
                 Ok(())
             }
             Expression::IntegerLiteral { value, .. } => {
@@ -831,7 +843,13 @@ impl MarieEmitter {
         context: &FunctionEmitContext<'_>,
     ) -> Result<Type, CompilerError> {
         match expression {
-            Expression::Identifier { name, .. } => self.resolve_symbol_type(context, name),
+            Expression::Identifier { name, .. } => {
+                if self.enum_constants.contains_key(name) {
+                    Ok(Type::Builtin(crate::ast::BuiltinType::Int))
+                } else {
+                    self.resolve_symbol_type(context, name)
+                }
+            }
             Expression::IntegerLiteral { .. } => Ok(Type::Builtin(crate::ast::BuiltinType::Int)),
             Expression::Unary { op, expr, .. } => match op {
                 crate::ast::UnaryOp::AddressOf => {
@@ -960,6 +978,7 @@ impl MarieEmitter {
                 }
                 1
             }
+            Type::Enum { .. } => 1,
             Type::Builtin(_) | Type::Pointer(_) | Type::Function { .. } => 1,
             Type::Array { element, size } => {
                 let count = size
@@ -1292,6 +1311,7 @@ impl MarieEmitter {
     fn register_structs_from_type(&mut self, ty: &Type) {
         match ty {
             Type::Alias(_) => {}
+            Type::Enum { .. } => {}
             Type::Pointer(inner) => self.register_structs_from_type(inner),
             Type::Array { element, .. } => self.register_structs_from_type(element),
             Type::Function {
@@ -1314,6 +1334,40 @@ impl MarieEmitter {
                 }
             }
             Type::Builtin(_) => {}
+        }
+    }
+
+    fn register_enums_from_type(&mut self, ty: &Type) {
+        match ty {
+            Type::Alias(_) | Type::Builtin(_) => {}
+            Type::Pointer(inner) => self.register_enums_from_type(inner),
+            Type::Array { element, .. } => self.register_enums_from_type(element),
+            Type::Function {
+                return_type,
+                params,
+            } => {
+                self.register_enums_from_type(return_type);
+                for parameter in params {
+                    self.register_enums_from_type(&parameter.ty);
+                }
+            }
+            Type::Struct { fields, .. } => {
+                for field in fields {
+                    self.register_enums_from_type(&field.ty);
+                }
+            }
+            Type::Enum { name, variants } => {
+                if !variants.is_empty() {
+                    self.enum_definitions
+                        .entry(name.clone())
+                        .or_insert_with(|| variants.clone());
+                    for variant in variants {
+                        self.enum_constants
+                            .entry(variant.name.clone())
+                            .or_insert(variant.value);
+                    }
+                }
+            }
         }
     }
 
@@ -1341,6 +1395,19 @@ impl MarieEmitter {
                     )));
                 };
                 self.resolve_type_with_visited(alias_target, visited)
+            }
+            Type::Enum { name, variants } => {
+                let resolved_variants = if variants.is_empty() {
+                    self.enum_definitions.get(name).cloned().ok_or_else(|| {
+                        CompilerError::semantic(format!("unknown enum type '{}'", name))
+                    })?
+                } else {
+                    variants.clone()
+                };
+                Ok(Type::Enum {
+                    name: name.clone(),
+                    variants: resolved_variants,
+                })
             }
             Type::Builtin(_) => Ok(ty.clone()),
             Type::Pointer(inner) => {

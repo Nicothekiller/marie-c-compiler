@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
 use crate::ast::{
-    Block, BlockItem, BuiltinType, ConstExpr, Expression, ExternalDeclaration, FunctionDeclaration,
-    StorageClass, StructField, TranslationUnit, Type, UnaryOp,
+    Block, BlockItem, BuiltinType, ConstExpr, EnumVariant, Expression, ExternalDeclaration,
+    FunctionDeclaration, StorageClass, StructField, TranslationUnit, Type, UnaryOp,
 };
 use crate::error::CompilerError;
 
@@ -17,6 +17,10 @@ pub struct SemanticInfo {
     pub struct_definitions: HashMap<String, Vec<StructField>>,
     /// Collected typedef aliases indexed by alias name.
     pub typedefs: HashMap<String, Type>,
+    /// Collected enum definitions indexed by tag name.
+    pub enum_definitions: HashMap<String, Vec<EnumVariant>>,
+    /// Collected enum constants indexed by name.
+    pub enum_constants: HashMap<String, i64>,
 }
 
 /// Function signature metadata collected during semantic analysis.
@@ -48,10 +52,37 @@ impl SemanticAnalyzer {
         let mut info = SemanticInfo::default();
 
         self.collect_struct_definitions(unit, &mut info)?;
+        self.collect_enum_definitions(unit, &mut info)?;
         self.collect_top_level_symbols(unit, &mut info)?;
         self.analyze_functions(unit, &info)?;
 
         Ok(info)
+    }
+
+    fn collect_enum_definitions(
+        &self,
+        unit: &TranslationUnit,
+        info: &mut SemanticInfo,
+    ) -> Result<(), CompilerError> {
+        for item in &unit.top_level_items {
+            match item {
+                ExternalDeclaration::TypeDeclaration(ty) => register_enums_from_type(ty, info)?,
+                ExternalDeclaration::GlobalDeclaration(declaration) => {
+                    for declarator in &declaration.declarators {
+                        register_enums_from_type(&declarator.ty, info)?;
+                    }
+                }
+                ExternalDeclaration::Function(function) => {
+                    register_enums_from_type(&function.return_type, info)?;
+                    for parameter in &function.params {
+                        register_enums_from_type(&parameter.ty, info)?;
+                    }
+                    collect_enums_from_block(&function.body, info)?;
+                }
+            }
+        }
+
+        Ok(())
     }
 
     fn collect_struct_definitions(
@@ -416,6 +447,13 @@ fn analyze_expression(
                 return Ok(ExprInfo {
                     ty,
                     is_lvalue: true,
+                });
+            }
+
+            if info.enum_constants.contains_key(name) {
+                return Ok(ExprInfo {
+                    ty: Type::Builtin(BuiltinType::Int),
+                    is_lvalue: false,
                 });
             }
 
@@ -805,6 +843,98 @@ fn collect_structs_from_block(block: &Block, info: &mut SemanticInfo) -> Result<
     Ok(())
 }
 
+fn collect_enums_from_block(block: &Block, info: &mut SemanticInfo) -> Result<(), CompilerError> {
+    for item in &block.items {
+        match item {
+            BlockItem::Declaration(declaration) => {
+                for declarator in &declaration.declarators {
+                    register_enums_from_type(&declarator.ty, info)?;
+                }
+            }
+            BlockItem::Statement(statement) => collect_enums_from_statement(statement, info)?,
+        }
+    }
+    Ok(())
+}
+
+fn collect_enums_from_statement(
+    statement: &crate::ast::Statement,
+    info: &mut SemanticInfo,
+) -> Result<(), CompilerError> {
+    match statement {
+        crate::ast::Statement::Block(block) => collect_enums_from_block(block, info),
+        crate::ast::Statement::If {
+            then_branch,
+            else_branch,
+            ..
+        } => {
+            collect_enums_from_statement(then_branch, info)?;
+            if let Some(else_branch) = else_branch {
+                collect_enums_from_statement(else_branch, info)?;
+            }
+            Ok(())
+        }
+        crate::ast::Statement::While { body, .. } => collect_enums_from_statement(body, info),
+        crate::ast::Statement::For { body, .. } => collect_enums_from_statement(body, info),
+        crate::ast::Statement::Return(_)
+        | crate::ast::Statement::Expression(_)
+        | crate::ast::Statement::InlineAsm(_) => Ok(()),
+    }
+}
+
+fn register_enums_from_type(ty: &Type, info: &mut SemanticInfo) -> Result<(), CompilerError> {
+    match ty {
+        Type::Alias(_) | Type::Builtin(_) => Ok(()),
+        Type::Pointer(inner) => register_enums_from_type(inner, info),
+        Type::Array { element, .. } => register_enums_from_type(element, info),
+        Type::Function {
+            return_type,
+            params,
+        } => {
+            register_enums_from_type(return_type, info)?;
+            for parameter in params {
+                register_enums_from_type(&parameter.ty, info)?;
+            }
+            Ok(())
+        }
+        Type::Struct { fields, .. } => {
+            for field in fields {
+                register_enums_from_type(&field.ty, info)?;
+            }
+            Ok(())
+        }
+        Type::Enum { name, variants } => {
+            if variants.is_empty() {
+                return Ok(());
+            }
+
+            if let Some(existing) = info.enum_definitions.get(name) {
+                if existing != variants {
+                    return Err(CompilerError::semantic(format!(
+                        "conflicting definition for enum '{}'",
+                        name
+                    )));
+                }
+                return Ok(());
+            }
+
+            for variant in variants {
+                if info.enum_constants.contains_key(&variant.name) {
+                    return Err(CompilerError::semantic(format!(
+                        "duplicate enum constant '{}'",
+                        variant.name
+                    )));
+                }
+                info.enum_constants.insert(variant.name.clone(), variant.value);
+            }
+
+            info.enum_definitions
+                .insert(name.clone(), variants.clone());
+            Ok(())
+        }
+    }
+}
+
 fn collect_structs_from_statement(
     statement: &crate::ast::Statement,
     info: &mut SemanticInfo,
@@ -833,6 +963,7 @@ fn collect_structs_from_statement(
 fn register_structs_from_type(ty: &Type, info: &mut SemanticInfo) -> Result<(), CompilerError> {
     match ty {
         Type::Alias(_) => Ok(()),
+        Type::Enum { .. } => Ok(()),
         Type::Pointer(inner) => register_structs_from_type(inner, info),
         Type::Array { element, .. } => register_structs_from_type(element, info),
         Type::Function {
@@ -896,6 +1027,19 @@ fn resolve_type_with_visited(
                 )));
             };
             resolve_type_with_visited(alias_target, info, visited_aliases)
+        }
+        Type::Enum { name, variants } => {
+            let resolved_variants = if variants.is_empty() {
+                info.enum_definitions.get(name).cloned().ok_or_else(|| {
+                    CompilerError::semantic(format!("unknown enum type '{}'", name))
+                })?
+            } else {
+                variants.clone()
+            };
+            Ok(Type::Enum {
+                name: name.clone(),
+                variants: resolved_variants,
+            })
         }
         Type::Builtin(_) => Ok(ty.clone()),
         Type::Pointer(inner) => {
@@ -1026,7 +1170,9 @@ fn lookup_variable_type(
 fn is_integer_like(ty: &Type) -> bool {
     matches!(
         ty,
-        Type::Builtin(BuiltinType::Int) | Type::Builtin(BuiltinType::Char)
+        Type::Builtin(BuiltinType::Int)
+            | Type::Builtin(BuiltinType::Char)
+            | Type::Enum { .. }
     )
 }
 
@@ -1108,7 +1254,11 @@ fn types_compatible(left: &Type, right: &Type) -> bool {
         (Type::Builtin(l), Type::Builtin(r)) => {
             matches!((l, r), (BuiltinType::Int, BuiltinType::Char) | (BuiltinType::Char, BuiltinType::Int))
         }
+        (Type::Enum { .. }, Type::Builtin(_)) | (Type::Builtin(_), Type::Enum { .. }) => true,
         (Type::Struct { name: left_name, .. }, Type::Struct { name: right_name, .. }) => {
+            left_name == right_name
+        }
+        (Type::Enum { name: left_name, .. }, Type::Enum { name: right_name, .. }) => {
             left_name == right_name
         }
         (Type::Pointer(left_inner), Type::Pointer(right_inner)) => {
@@ -1783,5 +1933,26 @@ mod tests {
             "typedef struct Point { int x; } Point; Point arr[3]; int main(void) { arr[0].x = 1; return 0; }",
         );
         assert!(result.is_ok(), "array of typedef struct should work");
+    }
+
+    #[test]
+    fn accepts_enum_constants_and_values() {
+        let result = analyze_source(
+            "enum Color { RED, GREEN = 3, BLUE }; int main(void) { return RED + BLUE; }",
+        );
+        assert!(result.is_ok(), "enum constants should resolve as int expressions");
+    }
+
+    #[test]
+    fn accepts_typedef_enum_alias() {
+        let result = analyze_source(
+            "typedef enum Color { RED, GREEN } Color; Color c; int main(void) { c = GREEN; return c; }",
+        );
+        assert!(result.is_ok(), "typedef enum alias should be usable");
+    }
+
+    #[test]
+    fn rejects_duplicate_enum_constant_names() {
+        assert_semantic_fails("enum Color { RED, RED }; int main(void) { return 0; }");
     }
 }

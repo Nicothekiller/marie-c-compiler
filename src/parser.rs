@@ -3,9 +3,9 @@ use pest::Parser;
 use pest_derive::Parser;
 
 use crate::ast::{
-    BinaryOp, Block, BlockItem, BuiltinType, ConstExpr, Declaration, Declarator, Expression,
-    ExternalDeclaration, FunctionDeclaration, Parameter, Statement, StorageClass, StructField,
-    TranslationUnit, Type, UnaryOp,
+    BinaryOp, Block, BlockItem, BuiltinType, ConstExpr, Declaration, Declarator, EnumVariant,
+    Expression, ExternalDeclaration, FunctionDeclaration, Parameter, Statement, StorageClass,
+    StructField, TranslationUnit, Type, UnaryOp,
 };
 use crate::error::{CompilerError, SourceLocation};
 
@@ -74,7 +74,7 @@ fn parse_external_declaration(
         Rule::declaration => {
             let (declaration, base_type) = parse_declaration_with_base(source, inner)?;
             if declaration.declarators.is_empty() && declaration.storage_class.is_none() {
-                if let Type::Struct { .. } = base_type {
+                if matches!(base_type, Type::Struct { .. } | Type::Enum { .. }) {
                     Ok(vec![ExternalDeclaration::TypeDeclaration(base_type)])
                 } else {
                     Ok(vec![ExternalDeclaration::GlobalDeclaration(declaration)])
@@ -229,6 +229,10 @@ fn parse_type_specifier(pair: Pair<'_, Rule>) -> Result<Type, CompilerError> {
     if inner.as_rule() == Rule::struct_specifier {
         return parse_struct_specifier(inner);
     }
+    if inner.as_rule() == Rule::enum_specifier {
+        let source = source_like_from_pair(&inner);
+        return parse_enum_specifier(inner, source);
+    }
 
     let builtin = match inner.as_rule() {
         Rule::kw_int => BuiltinType::Int,
@@ -245,6 +249,10 @@ fn parse_type_specifier(pair: Pair<'_, Rule>) -> Result<Type, CompilerError> {
     };
 
     Ok(Type::Builtin(builtin))
+}
+
+fn source_like_from_pair<'a>(pair: &Pair<'a, Rule>) -> &'a str {
+    pair.as_span().get_input()
 }
 
 fn parse_struct_specifier(pair: Pair<'_, Rule>) -> Result<Type, CompilerError> {
@@ -272,6 +280,74 @@ fn parse_struct_specifier(pair: Pair<'_, Rule>) -> Result<Type, CompilerError> {
         name: name_pair.as_str().to_string(),
         fields,
     })
+}
+
+fn parse_enum_specifier(pair: Pair<'_, Rule>, source: &str) -> Result<Type, CompilerError> {
+    let mut inner = pair.into_inner();
+
+    let Some(first) = inner.next() else {
+        return Err(CompilerError::parse("enum missing keyword".to_string()));
+    };
+    if first.as_rule() != Rule::kw_enum {
+        return Err(CompilerError::parse("invalid enum specifier".to_string()));
+    }
+
+    let Some(name_pair) = inner.next() else {
+        return Err(CompilerError::parse("enum missing name".to_string()));
+    };
+
+    let mut variants = Vec::new();
+    for item in inner {
+        if item.as_rule() == Rule::enum_enumerator_list {
+            variants = parse_enum_enumerator_list(source, item)?;
+        }
+    }
+
+    Ok(Type::Enum {
+        name: name_pair.as_str().to_string(),
+        variants,
+    })
+}
+
+fn parse_enum_enumerator_list(
+    source: &str,
+    pair: Pair<'_, Rule>,
+) -> Result<Vec<EnumVariant>, CompilerError> {
+    let mut variants = Vec::new();
+    let mut next_value: i64 = 0;
+
+    for item in pair.into_inner() {
+        if item.as_rule() != Rule::enum_enumerator {
+            continue;
+        }
+
+        let mut inner = item.into_inner();
+        let Some(name_pair) = inner.next() else {
+            continue;
+        };
+
+        let value = if let Some(assign_expr_pair) = inner.next() {
+            let expr = parse_assignment_expression(source, assign_expr_pair)?;
+            match expr {
+                Expression::IntegerLiteral { value, .. } => value,
+                _ => {
+                    return Err(CompilerError::parse(
+                        "enum value must be an integer literal".to_string(),
+                    ));
+                }
+            }
+        } else {
+            next_value
+        };
+
+        variants.push(EnumVariant {
+            name: name_pair.as_str().to_string(),
+            value,
+        });
+        next_value = value.saturating_add(1);
+    }
+
+    Ok(variants)
 }
 
 fn parse_struct_declaration(pair: Pair<'_, Rule>) -> Result<Vec<StructField>, CompilerError> {
@@ -2207,5 +2283,33 @@ mod tests {
         };
         assert_eq!(fields.len(), 2);
         assert!(matches!(fields[1].ty, Type::Pointer(_)));
+    }
+
+    #[test]
+    fn parses_enum_type_declaration() {
+        let unit = parse_unit("enum Color { RED, GREEN = 3, BLUE }; enum Color c;");
+
+        let ExternalDeclaration::TypeDeclaration(ty) = &unit.top_level_items[0] else {
+            panic!("expected enum type declaration");
+        };
+        assert!(
+            matches!(ty, Type::Enum { name, variants } if name == "Color" && variants.len() == 3)
+        );
+
+        let ExternalDeclaration::GlobalDeclaration(decl) = &unit.top_level_items[1] else {
+            panic!("expected variable declaration");
+        };
+        assert!(matches!(decl.declarators[0].ty, Type::Enum { .. }));
+    }
+
+    #[test]
+    fn parses_typedef_enum_alias_usage() {
+        let unit = parse_unit(
+            "typedef enum Color { RED, GREEN } Color; Color c; int main(void) { return RED; }",
+        );
+        let ExternalDeclaration::GlobalDeclaration(td) = &unit.top_level_items[0] else {
+            panic!("expected typedef declaration");
+        };
+        assert!(matches!(td.storage_class, Some(StorageClass::Typedef)));
     }
 }

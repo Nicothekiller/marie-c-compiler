@@ -1307,3 +1307,26 @@ fn emits_typedef_array_of_struct() {
     assert!(output.contains("StoreI helper_addr"));
     assert!(output.contains("LoadI helper_addr"));
 }
+
+#[test]
+fn emits_enum_constant_as_integer() {
+    let source = "enum Color { RED, GREEN = 3, BLUE }; int main(void) { return BLUE; }";
+    let unit = crate::parser::CParser::new()
+        .parse_translation_unit(source)
+        .expect("source should parse");
+
+    let output = MarieCodegen.emit(&unit).expect("codegen should succeed");
+    assert!(output.contains("const_int_4") || output.contains("Load const_int_4"));
+}
+
+#[test]
+fn emits_typedef_enum_alias_program() {
+    let source =
+        "typedef enum Color { RED, GREEN } Color; Color c; int main(void) { c = GREEN; return c; }";
+    let unit = crate::parser::CParser::new()
+        .parse_translation_unit(source)
+        .expect("source should parse");
+
+    let output = MarieCodegen.emit(&unit).expect("codegen should succeed");
+    assert!(output.contains("g_c, DEC 0"));
+}
