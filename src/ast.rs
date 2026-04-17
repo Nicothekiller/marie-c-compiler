@@ -165,6 +165,16 @@ pub enum Expression {
         value: i64,
         location: Option<crate::error::SourceLocation>,
     },
+    /// Increment/decrement expression (`++x`, `x++`, `--y`, `y--`).
+    Increment {
+        /// Operand to increment/decrement.
+        operand: Box<Expression>,
+        /// Whether this is postfix (`x++`) vs prefix (`++x`).
+        is_postfix: bool,
+        /// Whether this is increment (`++`) vs decrement (`--`).
+        is_increment: bool,
+        location: Option<crate::error::SourceLocation>,
+    },
     /// Unary expression with one operand.
     Unary {
         /// Unary operator applied to the operand.
@@ -227,6 +237,7 @@ impl Expression {
         match self {
             Self::Identifier { location, .. }
             | Self::IntegerLiteral { location, .. }
+            | Self::Increment { location, .. }
             | Self::Unary { location, .. }
             | Self::Binary { location, .. }
             | Self::Assignment { location, .. }
@@ -454,6 +465,22 @@ fn write_expression(output: &mut String, expression: &Expression, depth: usize) 
         }
         Expression::IntegerLiteral { value, .. } => {
             output.push_str(&format!("{indent}(IntegerLiteral {value})\n"));
+        }
+        Expression::Increment {
+            operand,
+            is_postfix,
+            is_increment,
+            ..
+        } => {
+            let kind = match (is_postfix, is_increment) {
+                (false, true) => "PreIncrement",
+                (false, false) => "PreDecrement",
+                (true, true) => "PostIncrement",
+                (true, false) => "PostDecrement",
+            };
+            output.push_str(&format!("{indent}({kind}\n"));
+            write_expression(output, operand, depth + 1);
+            output.push_str(&format!("{indent})\n"));
         }
         Expression::Unary { op, expr, .. } => {
             output.push_str(&format!("{indent}(Unary {:?}\n", op));

@@ -404,6 +404,38 @@ impl MarieEmitter {
                 self.instructions.push(format!("Load {}", label));
                 Ok(())
             }
+            Expression::Increment {
+                operand,
+                is_postfix,
+                is_increment,
+                location: _,
+            } => {
+                let name = get_incrementable_name(operand)?;
+                let label = self.resolve_symbol_label(context, &name)?;
+                let one_label = self.ensure_int_const(1);
+                let op = if *is_increment { "Add" } else { "Subt" };
+                if *is_postfix {
+                    let tmp_id = self.next_label_id();
+                    let tmp_label = format!("tmp_inc_{}", tmp_id);
+                    self.data.push(format!("{}, DEC 0", tmp_label));
+                    self.push_instructions([
+                        format!("Load {}", label),
+                        format!("Store {}", tmp_label),
+                        format!("Load {}", label),
+                        format!("{} {}", op, one_label),
+                        format!("Store {}", label),
+                        format!("Load {}", tmp_label),
+                    ]);
+                } else {
+                    self.push_instructions([
+                        format!("Load {}", label),
+                        format!("{} {}", op, one_label),
+                        format!("Store {}", label),
+                        format!("Load {}", label),
+                    ]);
+                }
+                Ok(())
+            }
             Expression::Unary { op, expr, .. } => {
                 use crate::ast::UnaryOp;
                 match op {
@@ -461,12 +493,16 @@ impl MarieEmitter {
                 self.data.push(format!("{}, DEC 0", rhs_temp));
                 self.instructions.push(format!("Store {}", rhs_temp));
 
-                self.instructions.push(format!("Load {}", lhs_temp));
-
                 use crate::ast::BinaryOp;
                 match op {
-                    BinaryOp::Add => self.instructions.push(format!("Add {}", rhs_temp)),
-                    BinaryOp::Subtract => self.instructions.push(format!("Subt {}", rhs_temp)),
+                    BinaryOp::Add => {
+                        self.instructions.push(format!("Load {}", lhs_temp));
+                        self.instructions.push(format!("Add {}", rhs_temp));
+                    }
+                    BinaryOp::Subtract => {
+                        self.instructions.push(format!("Load {}", lhs_temp));
+                        self.instructions.push(format!("Subt {}", rhs_temp));
+                    }
                     BinaryOp::Equal => self.emit_compare_equal(&lhs_temp, &rhs_temp),
                     BinaryOp::NotEqual => self.emit_compare_not_equal(&lhs_temp, &rhs_temp),
                     BinaryOp::Less => self.emit_compare_less(&lhs_temp, &rhs_temp),
@@ -852,6 +888,7 @@ impl MarieEmitter {
                 }
             }
             Expression::IntegerLiteral { .. } => Ok(Type::Builtin(crate::ast::BuiltinType::Int)),
+            Expression::Increment { .. } => Ok(Type::Builtin(crate::ast::BuiltinType::Int)),
             Expression::Unary { op, expr, .. } => match op {
                 crate::ast::UnaryOp::AddressOf => {
                     Ok(Type::Pointer(Box::new(self.expression_type(expr, context)?)))
@@ -1127,6 +1164,8 @@ impl MarieEmitter {
     fn emit_compare_less_equal(&mut self, lhs_temp: &str, rhs_temp: &str) {
         self.ensure_zero_const();
         self.ensure_one_const();
+        let check_equal_label = format!("cmp_le_{}_check_eq", self.next_label_id());
+        let false_label = format!("cmp_le_{}_false", self.next_label_id());
         let true_label = format!("cmp_le_{}_true", self.next_label_id());
         let end_label = format!("cmp_le_{}_end", self.next_label_id());
 
@@ -1134,10 +1173,12 @@ impl MarieEmitter {
             format!("Load {}", lhs_temp),
             format!("Subt {}", rhs_temp),
             "Skipcond 000".to_string(),
+            format!("Jump {}", check_equal_label),
             format!("Jump {}", true_label),
-            "Skipcond 400".to_string(),
+            format!("{}, Skipcond 400", check_equal_label),
+            format!("Jump {}", false_label),
             format!("Jump {}", true_label),
-            "Load const_zero".to_string(),
+            format!("{}, Load const_zero", false_label),
             format!("Jump {}", end_label),
             format!("{}, Load const_one", true_label),
             format!("{}, Add const_zero", end_label),
@@ -1165,6 +1206,8 @@ impl MarieEmitter {
     fn emit_compare_greater_equal(&mut self, lhs_temp: &str, rhs_temp: &str) {
         self.ensure_zero_const();
         self.ensure_one_const();
+        let check_equal_label = format!("cmp_ge_{}_check_eq", self.next_label_id());
+        let false_label = format!("cmp_ge_{}_false", self.next_label_id());
         let true_label = format!("cmp_ge_{}_true", self.next_label_id());
         let end_label = format!("cmp_ge_{}_end", self.next_label_id());
 
@@ -1172,10 +1215,12 @@ impl MarieEmitter {
             format!("Load {}", lhs_temp),
             format!("Subt {}", rhs_temp),
             "Skipcond 800".to_string(),
+            format!("Jump {}", check_equal_label),
             format!("Jump {}", true_label),
-            "Skipcond 400".to_string(),
+            format!("{}, Skipcond 400", check_equal_label),
+            format!("Jump {}", false_label),
             format!("Jump {}", true_label),
-            "Load const_zero".to_string(),
+            format!("{}, Load const_zero", false_label),
             format!("Jump {}", end_label),
             format!("{}, Load const_one", true_label),
             format!("{}, Add const_zero", end_label),
@@ -1674,6 +1719,15 @@ fn normalized_parameter_count(function: &FunctionDeclaration) -> usize {
 
 fn is_identifier_start_byte(byte: u8) -> bool {
     byte == b'_' || byte.is_ascii_alphabetic()
+}
+
+fn get_incrementable_name(expr: &Expression) -> Result<String, CompilerError> {
+    match expr {
+        Expression::Identifier { name, .. } => Ok(name.clone()),
+        _ => Err(CompilerError::semantic(
+            "increment/decrement requires lvalue expression".to_string(),
+        )),
+    }
 }
 
 fn is_identifier_continue_byte(byte: u8) -> bool {

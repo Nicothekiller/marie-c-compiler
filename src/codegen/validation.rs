@@ -177,6 +177,7 @@ fn validate_expression(
                 validate_expression(elem, unsupported_ops)?;
             }
         }
+        Expression::Increment { operand, .. } => validate_expression(operand, unsupported_ops)?,
         Expression::Identifier { .. } | Expression::IntegerLiteral { .. } => {}
     }
     Ok(())

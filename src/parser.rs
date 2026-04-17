@@ -1045,6 +1045,16 @@ fn parse_unary_expression(source: &str, pair: Pair<'_, Rule>) -> Result<Expressi
         && inner[0].as_rule() == Rule::unary_operator
         && inner[1].as_rule() == Rule::unary_expression
     {
+        let op_text = inner[0].as_str();
+        if op_text == "++" || op_text == "--" {
+            let expr = parse_unary_expression(source, inner[1].clone())?;
+            return Ok(Expression::Increment {
+                operand: Box::new(expr),
+                is_postfix: false,
+                is_increment: op_text == "++",
+                location: Some(unary_location),
+            });
+        }
         let op = parse_unary_operator(inner[0].clone())?;
         let expr = parse_unary_expression(source, inner[1].clone())?;
         return Ok(Expression::Unary {
@@ -1147,6 +1157,15 @@ fn parse_postfix_expression(
                     base: Box::new(expr),
                     member: member_pair.as_str().to_string(),
                     through_pointer,
+                    location: Some(suffix_location),
+                };
+            }
+            Rule::increment_suffix => {
+                let is_increment = actual_suffix.as_str() == "++";
+                expr = Expression::Increment {
+                    operand: Box::new(expr),
+                    is_postfix: true,
+                    is_increment,
                     location: Some(suffix_location),
                 };
             }
@@ -2323,5 +2342,113 @@ mod tests {
             panic!("expected typedef declaration");
         };
         assert!(matches!(td.storage_class, Some(StorageClass::Typedef)));
+    }
+
+    #[test]
+    fn parses_prefix_increment() {
+        let unit = parse_unit("int main(void) { int x; ++x; return 0; }");
+        let fn_decl = match &unit.top_level_items[0] {
+            ExternalDeclaration::Function(f) => f,
+            _ => panic!("expected function"),
+        };
+        // items[0] is the declaration, items[1] is the increment statement
+        let stmt = match &fn_decl.body.items[1] {
+            BlockItem::Statement(Statement::Expression(Some(expr))) => expr,
+            _ => panic!("expected expression statement"),
+        };
+        assert!(matches!(
+            stmt,
+            Expression::Increment {
+                is_postfix: false,
+                is_increment: true,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn parses_prefix_decrement() {
+        let unit = parse_unit("int main(void) { int x; --x; return 0; }");
+        let fn_decl = match &unit.top_level_items[0] {
+            ExternalDeclaration::Function(f) => f,
+            _ => panic!("expected function"),
+        };
+        let stmt = match &fn_decl.body.items[1] {
+            BlockItem::Statement(Statement::Expression(Some(expr))) => expr,
+            _ => panic!("expected expression statement"),
+        };
+        assert!(matches!(
+            stmt,
+            Expression::Increment {
+                is_postfix: false,
+                is_increment: false,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn parses_postfix_increment() {
+        let unit = parse_unit("int main(void) { int x; x++; return 0; }");
+        let fn_decl = match &unit.top_level_items[0] {
+            ExternalDeclaration::Function(f) => f,
+            _ => panic!("expected function"),
+        };
+        let stmt = match &fn_decl.body.items[1] {
+            BlockItem::Statement(Statement::Expression(Some(expr))) => expr,
+            _ => panic!("expected expression statement"),
+        };
+        assert!(matches!(
+            stmt,
+            Expression::Increment {
+                is_postfix: true,
+                is_increment: true,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn parses_postfix_decrement() {
+        let unit = parse_unit("int main(void) { int x; x--; return 0; }");
+        let fn_decl = match &unit.top_level_items[0] {
+            ExternalDeclaration::Function(f) => f,
+            _ => panic!("expected function"),
+        };
+        let stmt = match &fn_decl.body.items[1] {
+            BlockItem::Statement(Statement::Expression(Some(expr))) => expr,
+            _ => panic!("expected expression statement"),
+        };
+        assert!(matches!(
+            stmt,
+            Expression::Increment {
+                is_postfix: true,
+                is_increment: false,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn parses_increment_in_assignment() {
+        // int x; is items[0], int y = x++; is items[1], return 0 is items[2]
+        let unit = parse_unit("int main(void) { int x; int y = x++; return y; }");
+        let fn_decl = match &unit.top_level_items[0] {
+            ExternalDeclaration::Function(f) => f,
+            _ => panic!("expected function"),
+        };
+        let decl = match &fn_decl.body.items[1] {
+            BlockItem::Declaration(d) => d,
+            _ => panic!("expected declaration"),
+        };
+        let init = decl.declarators[0].initializer.as_ref().unwrap();
+        assert!(matches!(
+            init,
+            Expression::Increment {
+                is_postfix: true,
+                is_increment: true,
+                ..
+            }
+        ));
     }
 }

@@ -829,6 +829,19 @@ fn analyze_expression(
                 is_lvalue: true,
             })
         }
+        Expression::Increment { operand, .. } => {
+            let info = analyze_expression(context, operand, info)?;
+            if !info.is_lvalue {
+                return Err(CompilerError::semantic_with_location(
+                    "increment/decrement requires lvalue operand".to_string(),
+                    expression.location(),
+                ));
+            }
+            Ok(ExprInfo {
+                ty: info.ty,
+                is_lvalue: false,
+            })
+        }
     }
 }
 
@@ -1971,8 +1984,48 @@ mod tests {
         assert!(result.is_ok(), "typedef enum alias should be usable");
     }
 
-    #[test]
-    fn rejects_duplicate_enum_constant_names() {
-        assert_semantic_fails("enum Color { RED, RED }; int main(void) { return 0; }");
-    }
+#[test]
+fn rejects_duplicate_enum_constant_names() {
+    assert_semantic_fails("enum Color { RED, RED }; int main(void) { return 0; }");
+}
+
+#[test]
+fn accepts_prefix_increment() {
+    let result = analyze_source("int main(void) { int x; ++x; return x; }");
+    assert!(result.is_ok(), "prefix increment should be accepted");
+}
+
+#[test]
+fn accepts_postfix_increment() {
+    let result = analyze_source("int main(void) { int x; x++; return x; }");
+    assert!(result.is_ok(), "postfix increment should be accepted");
+}
+
+#[test]
+fn accepts_prefix_decrement() {
+    let result = analyze_source("int main(void) { int x; --x; return x; }");
+    assert!(result.is_ok(), "prefix decrement should be accepted");
+}
+
+#[test]
+fn accepts_postfix_decrement() {
+    let result = analyze_source("int main(void) { int x; x--; return x; }");
+    assert!(result.is_ok(), "postfix decrement should be accepted");
+}
+
+#[test]
+fn accepts_increment_in_assignment() {
+    let result = analyze_source("int main(void) { int x; int y = x++; return y; }");
+    assert!(result.is_ok(), "postfix increment in assignment should be accepted");
+}
+
+#[test]
+fn rejects_increment_on_literal() {
+    assert_semantic_fails("int main(void) { 5++; return 0; }");
+}
+
+#[test]
+fn rejects_increment_on_undeclared_variable() {
+    assert_semantic_fails("int main(void) { ++x; return 0; }");
+}
 }

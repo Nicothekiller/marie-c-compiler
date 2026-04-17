@@ -1393,3 +1393,74 @@ fn emits_division_with_variables() {
     let output = MarieCodegen.emit(&unit).expect("codegen should succeed");
     assert!(output.contains("helper_div"));
 }
+
+/// Verifies prefix increment generates correct MARIE code.
+/// Output should load, add 1, store back, then load the new value.
+#[test]
+fn emits_prefix_increment() {
+    let source = "int main(void) { int x; ++x; return x; }";
+    let unit = crate::parser::CParser::new()
+        .parse_translation_unit(source)
+        .expect("source should parse");
+
+    let output = MarieCodegen.emit(&unit).expect("codegen should succeed");
+    // Should contain: Load x, Add const_one, Store x, Load x
+    assert!(output.contains("Load v_main_0_x"));
+    assert!(output.contains("Add const_one"));
+    assert!(output.contains("Store v_main_0_x"));
+    // Should contain another Load x to return the new value
+    assert!(output.contains("Load v_main_0_x"));
+}
+
+/// Verifies prefix decrement generates correct MARIE code.
+#[test]
+fn emits_prefix_decrement() {
+    let source = "int main(void) { int x; --x; return x; }";
+    let unit = crate::parser::CParser::new()
+        .parse_translation_unit(source)
+        .expect("source should parse");
+
+    let output = MarieCodegen.emit(&unit).expect("codegen should succeed");
+    assert!(output.contains("Load v_main_0_x"));
+    assert!(output.contains("Subt const_one"));
+    assert!(output.contains("Store v_main_0_x"));
+    assert!(output.contains("Load v_main_0_x"));
+}
+
+/// Verifies postfix increment generates correct MARIE code.
+/// Output should store original value, increment, then load original.
+#[test]
+fn emits_postfix_increment() {
+    let source = "int main(void) { int x; int y = x++; return y; }";
+    let unit = crate::parser::CParser::new()
+        .parse_translation_unit(source)
+        .expect("source should parse");
+
+    let output = MarieCodegen.emit(&unit).expect("codegen should succeed");
+    // Should store original value to temp, then load it for y
+    assert!(output.contains("tmp_inc_"));
+    assert!(output.contains("Load v_main_0_x"));
+    assert!(output.contains("Store tmp_inc_"));
+    assert!(output.contains("Add const_one"));
+    assert!(output.contains("Store v_main_0_x"));
+    // Final load should be from temp, not from x
+    assert!(output.contains("Load tmp_inc_"));
+    assert!(output.contains("Store v_main_1_y"));
+}
+
+/// Verifies postfix decrement generates correct MARIE code.
+#[test]
+fn emits_postfix_decrement() {
+    let source = "int main(void) { int x; int y = x--; return y; }";
+    let unit = crate::parser::CParser::new()
+        .parse_translation_unit(source)
+        .expect("source should parse");
+
+    let output = MarieCodegen.emit(&unit).expect("codegen should succeed");
+    assert!(output.contains("tmp_inc_"));
+    assert!(output.contains("Load v_main_0_x"));
+    assert!(output.contains("Store tmp_inc_"));
+    assert!(output.contains("Subt const_one"));
+    assert!(output.contains("Store v_main_0_x"));
+    assert!(output.contains("Load tmp_inc_"));
+}

@@ -111,7 +111,7 @@ unary_expression = {
     | postfix_expression
 }
 
-unary_operator = { "&" | "*" | "+" | "-" | "!" }
+unary_operator = { "++" | "--" | "&" | "*" | "+" | "-" | "!" }
 
 postfix_expression = {
     primary_expression
@@ -123,7 +123,10 @@ postfix_suffix = {
     | call_suffix
     | member_suffix
     | pointer_member_suffix
+    | increment_suffix
 }
+
+increment_suffix = @{ "++" | "--" }
 
 index_suffix = { "[" ~ expression ~ "]" }
 call_suffix = { "(" ~ argument_expression_list? ~ ")" }
