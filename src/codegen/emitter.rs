@@ -13,6 +13,7 @@ pub(crate) struct MarieEmitter {
     functions: HashMap<String, PlannedFunction>,
     globals: HashMap<String, String>,
     global_types: HashMap<String, Type>,
+    typedefs: HashMap<String, Type>,
     struct_definitions: HashMap<String, Vec<StructField>>,
     int_consts: HashMap<i64, String>,
     addr_consts: HashMap<String, String>,
@@ -60,6 +61,7 @@ impl MarieEmitter {
 
         for item in &ast.top_level_items {
             match item {
+                ExternalDeclaration::TypeDeclaration(_) => {}
                 ExternalDeclaration::GlobalDeclaration(_) => {}
                 ExternalDeclaration::Function(function) => self.emit_function(function)?,
             }
@@ -67,6 +69,9 @@ impl MarieEmitter {
 
         for item in &ast.top_level_items {
             if let ExternalDeclaration::GlobalDeclaration(declaration) = item {
+                if matches!(declaration.storage_class, Some(crate::ast::StorageClass::Typedef)) {
+                    continue;
+                }
                 for declarator in &declaration.declarators {
                     let Some(label) = self.globals.get(&declarator.name).cloned() else {
                         continue;
@@ -86,14 +91,29 @@ impl MarieEmitter {
     fn plan_symbols(&mut self, ast: &TranslationUnit) {
         for item in &ast.top_level_items {
             match item {
+                ExternalDeclaration::TypeDeclaration(ty) => {
+                    self.register_structs_from_type(ty);
+                }
                 ExternalDeclaration::GlobalDeclaration(declaration) => {
+                    if matches!(declaration.storage_class, Some(crate::ast::StorageClass::Typedef)) {
+                        for declarator in &declaration.declarators {
+                            self.register_structs_from_type(&declarator.ty);
+                            let resolved = self
+                                .resolve_type(&declarator.ty)
+                                .unwrap_or_else(|_| declarator.ty.clone());
+                            self.typedefs.insert(declarator.name.clone(), resolved);
+                        }
+                        continue;
+                    }
                     for declarator in &declaration.declarators {
                         self.register_structs_from_type(&declarator.ty);
                         self.globals
                             .insert(declarator.name.clone(), format!("g_{}", declarator.name));
-                        if let Ok(ty) = self.resolve_type(&declarator.ty) {
-                            self.global_types.insert(declarator.name.clone(), ty);
-                        }
+                        let resolved_or_raw = self
+                            .resolve_type(&declarator.ty)
+                            .unwrap_or_else(|_| declarator.ty.clone());
+                        self.global_types
+                            .insert(declarator.name.clone(), resolved_or_raw);
                     }
                 }
                 ExternalDeclaration::Function(function) => {
@@ -932,6 +952,14 @@ impl MarieEmitter {
 
     fn type_word_size(&self, ty: &Type) -> usize {
         match ty {
+            Type::Alias(name) => {
+                if let Some(alias_target) = self.typedefs.get(name)
+                    && let Ok(resolved) = self.resolve_type(alias_target)
+                {
+                    return self.type_word_size(&resolved);
+                }
+                1
+            }
             Type::Builtin(_) | Type::Pointer(_) | Type::Function { .. } => 1,
             Type::Array { element, size } => {
                 let count = size
@@ -1263,6 +1291,7 @@ impl MarieEmitter {
 
     fn register_structs_from_type(&mut self, ty: &Type) {
         match ty {
+            Type::Alias(_) => {}
             Type::Pointer(inner) => self.register_structs_from_type(inner),
             Type::Array { element, .. } => self.register_structs_from_type(element),
             Type::Function {
@@ -1289,11 +1318,44 @@ impl MarieEmitter {
     }
 
     fn resolve_type(&self, ty: &Type) -> Result<Type, CompilerError> {
+        self.resolve_type_with_visited(ty, &mut std::collections::HashSet::new())
+    }
+
+    fn resolve_type_with_visited(
+        &self,
+        ty: &Type,
+        visited: &mut std::collections::HashSet<String>,
+    ) -> Result<Type, CompilerError> {
         match ty {
+            Type::Alias(name) => {
+                if !visited.insert(name.clone()) {
+                    return Err(CompilerError::semantic(format!(
+                        "circular typedef reference '{}'",
+                        name
+                    )));
+                }
+                let Some(alias_target) = self.typedefs.get(name) else {
+                    return Err(CompilerError::semantic(format!(
+                        "unknown typedef '{}' in codegen",
+                        name
+                    )));
+                };
+                self.resolve_type_with_visited(alias_target, visited)
+            }
             Type::Builtin(_) => Ok(ty.clone()),
-            Type::Pointer(inner) => Ok(Type::Pointer(Box::new(self.resolve_type(inner)?))),
+            Type::Pointer(inner) => {
+                if let Type::Struct { name, .. } = inner.as_ref() {
+                    return Ok(Type::Pointer(Box::new(Type::Struct {
+                        name: name.clone(),
+                        fields: Vec::new(),
+                    })));
+                }
+                Ok(Type::Pointer(Box::new(
+                    self.resolve_type_with_visited(inner, visited)?,
+                )))
+            }
             Type::Array { element, size } => Ok(Type::Array {
-                element: Box::new(self.resolve_type(element)?),
+                element: Box::new(self.resolve_type_with_visited(element, visited)?),
                 size: *size,
             }),
             Type::Function {
@@ -1304,12 +1366,12 @@ impl MarieEmitter {
                 for parameter in params {
                     resolved_params.push(Parameter {
                         name: parameter.name.clone(),
-                        ty: self.resolve_type(&parameter.ty)?,
+                        ty: self.resolve_type_with_visited(&parameter.ty, visited)?,
                         location: parameter.location,
                     });
                 }
                 Ok(Type::Function {
-                    return_type: Box::new(self.resolve_type(return_type)?),
+                    return_type: Box::new(self.resolve_type_with_visited(return_type, visited)?),
                     params: resolved_params,
                 })
             }
@@ -1326,7 +1388,7 @@ impl MarieEmitter {
                 for field in concrete_fields {
                     resolved_fields.push(StructField {
                         name: field.name,
-                        ty: self.resolve_type(&field.ty)?,
+                        ty: self.resolve_type_with_visited(&field.ty, visited)?,
                     });
                 }
 

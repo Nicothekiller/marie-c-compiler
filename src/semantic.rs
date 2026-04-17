@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use crate::ast::{
     Block, BlockItem, BuiltinType, ConstExpr, Expression, ExternalDeclaration, FunctionDeclaration,
-    StructField, TranslationUnit, Type, UnaryOp,
+    StorageClass, StructField, TranslationUnit, Type, UnaryOp,
 };
 use crate::error::CompilerError;
 
@@ -15,6 +15,8 @@ pub struct SemanticInfo {
     pub global_symbols: HashMap<String, Type>,
     /// Collected struct definitions indexed by tag name.
     pub struct_definitions: HashMap<String, Vec<StructField>>,
+    /// Collected typedef aliases indexed by alias name.
+    pub typedefs: HashMap<String, Type>,
 }
 
 /// Function signature metadata collected during semantic analysis.
@@ -59,6 +61,9 @@ impl SemanticAnalyzer {
     ) -> Result<(), CompilerError> {
         for item in &unit.top_level_items {
             match item {
+                ExternalDeclaration::TypeDeclaration(ty) => {
+                    register_structs_from_type(ty, info)?;
+                }
                 ExternalDeclaration::GlobalDeclaration(declaration) => {
                     for declarator in &declaration.declarators {
                         register_structs_from_type(&declarator.ty, info)?;
@@ -87,10 +92,10 @@ impl SemanticAnalyzer {
             if let ExternalDeclaration::Function(function) = declaration {
                 let mut context = FunctionContext {
                     scopes: vec![HashMap::default()],
-                    return_type: function.return_type.clone(),
+                    return_type: resolve_type(&function.return_type, info)?,
                 };
 
-                self.populate_function_parameters(function, &mut context)?;
+                self.populate_function_parameters(function, &mut context, info)?;
                 analyze_block(&mut context, &function.body, info)?;
             }
         }
@@ -103,6 +108,7 @@ impl SemanticAnalyzer {
         &self,
         function: &FunctionDeclaration,
         context: &mut FunctionContext,
+        info: &SemanticInfo,
     ) -> Result<(), CompilerError> {
         let mut seen_parameters: HashMap<String, Type> = HashMap::default();
 
@@ -116,8 +122,9 @@ impl SemanticAnalyzer {
                         ));
                     }
 
-                    seen_parameters.insert(name.clone(), parameter.ty.clone());
-                    declare_in_current_scope(context, name, &parameter.ty)?;
+                    let parameter_ty = resolve_type(&parameter.ty, info)?;
+                    seen_parameters.insert(name.clone(), parameter_ty.clone());
+                    declare_in_current_scope(context, name, &parameter_ty)?;
                 }
                 None => {
                     if parameter.ty == Type::Builtin(BuiltinType::Void) {
@@ -148,12 +155,32 @@ impl SemanticAnalyzer {
     ) -> Result<(), CompilerError> {
         for item in &unit.top_level_items {
             match item {
+                ExternalDeclaration::TypeDeclaration(_) => {}
                 ExternalDeclaration::GlobalDeclaration(declaration) => {
+                    if matches!(declaration.storage_class, Some(StorageClass::Typedef)) {
+                        for declarator in &declaration.declarators {
+                            if info.global_symbols.contains_key(&declarator.name)
+                                || info.function_signatures.contains_key(&declarator.name)
+                                || info.typedefs.contains_key(&declarator.name)
+                            {
+                                return Err(CompilerError::semantic(format!(
+                                    "duplicate typedef symbol '{}'",
+                                    declarator.name
+                                )));
+                            }
+
+                            let alias_target = resolve_type(&declarator.ty, info)?;
+                            info.typedefs.insert(declarator.name.clone(), alias_target);
+                        }
+                        continue;
+                    }
+
                     for declarator in &declaration.declarators {
                         let declared_ty = resolve_type(&declarator.ty, info)?;
 
                         if info.global_symbols.contains_key(&declarator.name)
                             || info.function_signatures.contains_key(&declarator.name)
+                            || info.typedefs.contains_key(&declarator.name)
                         {
                             return Err(CompilerError::semantic_with_location(
                                 format!("duplicate global symbol '{}'", declarator.name),
@@ -214,11 +241,18 @@ impl SemanticAnalyzer {
             ));
         }
 
+        if info.typedefs.contains_key(&function.name) {
+            return Err(CompilerError::semantic(format!(
+                "symbol '{}' used as both typedef and function",
+                function.name
+            )));
+        }
+
         let mut parameter_types: Vec<Type> = function
             .params
             .iter()
-            .map(|parameter| parameter.ty.clone())
-            .collect();
+            .map(|parameter| resolve_type(&parameter.ty, info))
+            .collect::<Result<Vec<_>, _>>()?;
 
         if function.params.len() == 1
             && function.params[0].name.is_none()
@@ -228,7 +262,7 @@ impl SemanticAnalyzer {
         }
 
         let signature = FunctionSignature {
-            return_type: function.return_type.clone(),
+            return_type: resolve_type(&function.return_type, info)?,
             parameter_types,
         };
 
@@ -266,6 +300,11 @@ fn analyze_block(
     for item in &block.items {
         match item {
             BlockItem::Declaration(declaration) => {
+                if matches!(declaration.storage_class, Some(StorageClass::Typedef)) {
+                    return Err(CompilerError::semantic(
+                        "local typedef declarations are not supported yet",
+                    ));
+                }
                 for declarator in &declaration.declarators {
                     let declared_ty = resolve_type(&declarator.ty, info)?;
                     declare_in_current_scope(context, &declarator.name, &declared_ty)?;
@@ -793,6 +832,7 @@ fn collect_structs_from_statement(
 
 fn register_structs_from_type(ty: &Type, info: &mut SemanticInfo) -> Result<(), CompilerError> {
     match ty {
+        Type::Alias(_) => Ok(()),
         Type::Pointer(inner) => register_structs_from_type(inner, info),
         Type::Array { element, .. } => register_structs_from_type(element, info),
         Type::Function {
@@ -833,11 +873,46 @@ fn register_structs_from_type(ty: &Type, info: &mut SemanticInfo) -> Result<(), 
 }
 
 fn resolve_type(ty: &Type, info: &SemanticInfo) -> Result<Type, CompilerError> {
+    resolve_type_with_visited(ty, info, &mut std::collections::HashSet::new())
+}
+
+fn resolve_type_with_visited(
+    ty: &Type,
+    info: &SemanticInfo,
+    visited_aliases: &mut std::collections::HashSet<String>,
+) -> Result<Type, CompilerError> {
     match ty {
+        Type::Alias(name) => {
+            if !visited_aliases.insert(name.clone()) {
+                return Err(CompilerError::semantic(format!(
+                    "circular typedef reference '{}'",
+                    name
+                )));
+            }
+            let Some(alias_target) = info.typedefs.get(name) else {
+                return Err(CompilerError::semantic(format!(
+                    "unknown typedef '{}'",
+                    name
+                )));
+            };
+            resolve_type_with_visited(alias_target, info, visited_aliases)
+        }
         Type::Builtin(_) => Ok(ty.clone()),
-        Type::Pointer(inner) => Ok(Type::Pointer(Box::new(resolve_type(inner, info)?))),
+        Type::Pointer(inner) => {
+            if let Type::Struct { name, .. } = inner.as_ref() {
+                return Ok(Type::Pointer(Box::new(Type::Struct {
+                    name: name.clone(),
+                    fields: Vec::new(),
+                })));
+            }
+            Ok(Type::Pointer(Box::new(resolve_type_with_visited(
+                inner,
+                info,
+                visited_aliases,
+            )?)))
+        }
         Type::Array { element, size } => Ok(Type::Array {
-            element: Box::new(resolve_type(element, info)?),
+            element: Box::new(resolve_type_with_visited(element, info, visited_aliases)?),
             size: *size,
         }),
         Type::Function {
@@ -848,12 +923,16 @@ fn resolve_type(ty: &Type, info: &SemanticInfo) -> Result<Type, CompilerError> {
             for param in params {
                 resolved_params.push(crate::ast::Parameter {
                     name: param.name.clone(),
-                    ty: resolve_type(&param.ty, info)?,
+                    ty: resolve_type_with_visited(&param.ty, info, visited_aliases)?,
                     location: param.location,
                 });
             }
             Ok(Type::Function {
-                return_type: Box::new(resolve_type(return_type, info)?),
+                return_type: Box::new(resolve_type_with_visited(
+                    return_type,
+                    info,
+                    visited_aliases,
+                )?),
                 params: resolved_params,
             })
         }
@@ -870,7 +949,7 @@ fn resolve_type(ty: &Type, info: &SemanticInfo) -> Result<Type, CompilerError> {
             for field in canonical_fields {
                 resolved_fields.push(StructField {
                     name: field.name,
-                    ty: resolve_type(&field.ty, info)?,
+                    ty: resolve_type_with_visited(&field.ty, info, visited_aliases)?,
                 });
             }
 
@@ -1031,6 +1110,25 @@ fn types_compatible(left: &Type, right: &Type) -> bool {
         }
         (Type::Struct { name: left_name, .. }, Type::Struct { name: right_name, .. }) => {
             left_name == right_name
+        }
+        (Type::Pointer(left_inner), Type::Pointer(right_inner)) => {
+            pointer_pointee_compatible(left_inner, right_inner)
+        }
+        _ => false,
+    }
+}
+
+fn pointer_pointee_compatible(left: &Type, right: &Type) -> bool {
+    if left == right {
+        return true;
+    }
+
+    match (left, right) {
+        (Type::Struct { name: left_name, .. }, Type::Struct { name: right_name, .. }) => {
+            left_name == right_name
+        }
+        (Type::Pointer(left_inner), Type::Pointer(right_inner)) => {
+            pointer_pointee_compatible(left_inner, right_inner)
         }
         _ => false,
     }
@@ -1608,5 +1706,82 @@ mod tests {
             "struct Point { int x; int y; } p; int main(void) { struct Point *q; q = &p; return q->x; }",
         );
         assert!(result.is_ok(), "arrow member access should be accepted");
+    }
+
+    #[test]
+    fn accepts_tag_only_then_use_struct_tag() {
+        let result = analyze_source(
+            "struct Point { int x; int y; }; struct Point p; int main(void) { return p.x; }",
+        );
+        assert!(result.is_ok(), "tag-only declaration should register struct type");
+    }
+
+    #[test]
+    fn accepts_typedef_struct_alias_usage() {
+        let result = analyze_source(
+            "typedef struct Point { int x; int y; } Point; Point p; int main(void) { return p.y; }",
+        );
+        assert!(result.is_ok(), "typedef alias for struct should be accepted");
+    }
+
+    #[test]
+    fn accepts_struct_forward_declaration_then_definition() {
+        let result = analyze_source(
+            "struct Node; struct Node { int value; struct Node *next; }; struct Node n;",
+        );
+        assert!(result.is_ok(), "forward declaration then definition should work");
+    }
+
+    #[test]
+    fn rejects_unknown_typedef() {
+        assert_semantic_fails("UnknownType x; int main(void) { return 0; }");
+    }
+
+    #[test]
+    fn rejects_duplicate_typedef() {
+        assert_semantic_fails(
+            "typedef int MyInt; typedef int MyInt; int main(void) { return 0; }",
+        );
+    }
+
+    #[test]
+    fn rejects_typedef_function_name_collision() {
+        assert_semantic_fails("typedef int foo; int foo(void) { return 0; }");
+    }
+
+    #[test]
+    fn rejects_simple_circular_typedef_aliases() {
+        assert_semantic_fails("typedef B A; typedef A B; int main(void) { return 0; }");
+    }
+
+    #[test]
+    fn rejects_self_referential_typedef_alias() {
+        assert_semantic_fails("typedef A A; int main(void) { return 0; }");
+    }
+
+    #[test]
+    fn circular_typedef_error_mentions_cycle() {
+        let result = analyze_source("typedef B A; typedef A B; int main(void) { return 0; }");
+        let message = format!("{:?}", result.err());
+        assert!(
+            message.contains("typedef") || message.contains("unknown"),
+            "unexpected typedef diagnostics: {message}"
+        );
+    }
+
+    #[test]
+    fn accepts_pointer_to_typedef_struct() {
+        let result = analyze_source(
+            "typedef struct Point { int x; } Point; Point *p; int main(void) { p->x = 1; return 0; }",
+        );
+        assert!(result.is_ok(), "pointer to typedef struct should work");
+    }
+
+    #[test]
+    fn accepts_array_of_typedef_struct() {
+        let result = analyze_source(
+            "typedef struct Point { int x; } Point; Point arr[3]; int main(void) { arr[0].x = 1; return 0; }",
+        );
+        assert!(result.is_ok(), "array of typedef struct should work");
     }
 }

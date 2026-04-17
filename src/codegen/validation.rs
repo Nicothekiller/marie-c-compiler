@@ -11,6 +11,7 @@ pub(crate) fn validate_ast(
 ) -> Result<(), CompilerError> {
     for item in &ast.top_level_items {
         match item {
+            ExternalDeclaration::TypeDeclaration(_) => {}
             ExternalDeclaration::Function(f) => validate_block(&f.body, unsupported_ops)?,
             ExternalDeclaration::GlobalDeclaration(d) => {
                 if let Some(sc) = &d.storage_class {

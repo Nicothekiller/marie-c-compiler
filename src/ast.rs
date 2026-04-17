@@ -10,6 +10,8 @@ pub struct TranslationUnit {
 pub enum ExternalDeclaration {
     /// Global variable declaration.
     GlobalDeclaration(Declaration),
+    /// Top-level type declaration (currently for struct tags).
+    TypeDeclaration(Type),
     /// Function definition.
     Function(FunctionDeclaration),
 }
@@ -44,6 +46,8 @@ pub enum Type {
         name: String,
         fields: Vec<StructField>,
     },
+    /// Typedef alias by name.
+    Alias(String),
 }
 
 /// Struct field declaration entry.
@@ -85,6 +89,7 @@ pub struct Declaration {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StorageClass {
     Static,
+    Typedef,
 }
 
 /// Function definition node.
@@ -286,6 +291,9 @@ fn write_external_declaration(output: &mut String, item: &ExternalDeclaration, d
                 output.push_str(&format!("{indent}  )\n"));
             }
             output.push_str(&format!("{indent})\n"));
+        }
+        ExternalDeclaration::TypeDeclaration(ty) => {
+            output.push_str(&format!("{indent}(TypeDeclaration {:?})\n", ty));
         }
         ExternalDeclaration::Function(function) => {
             output.push_str(&format!("{indent}(Function {}\n", function.name));

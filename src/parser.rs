@@ -1,5 +1,5 @@
-use pest::Parser;
 use pest::iterators::Pair;
+use pest::Parser;
 use pest_derive::Parser;
 
 use crate::ast::{
@@ -72,8 +72,16 @@ fn parse_external_declaration(
             parse_function_definition(source, inner)?,
         )]),
         Rule::declaration => {
-            let declaration = parse_declaration(source, inner)?;
-            Ok(vec![ExternalDeclaration::GlobalDeclaration(declaration)])
+            let (declaration, base_type) = parse_declaration_with_base(source, inner)?;
+            if declaration.declarators.is_empty() && declaration.storage_class.is_none() {
+                if let Type::Struct { .. } = base_type {
+                    Ok(vec![ExternalDeclaration::TypeDeclaration(base_type)])
+                } else {
+                    Ok(vec![ExternalDeclaration::GlobalDeclaration(declaration)])
+                }
+            } else {
+                Ok(vec![ExternalDeclaration::GlobalDeclaration(declaration)])
+            }
         }
         _ => Err(CompilerError::parse(
             "unexpected external declaration".to_string(),
@@ -129,10 +137,18 @@ fn parse_function_definition(
 
 /// Lowers a parsed declaration into a declaration AST node.
 fn parse_declaration(source: &str, pair: Pair<'_, Rule>) -> Result<Declaration, CompilerError> {
+    let (declaration, _base_type) = parse_declaration_with_base(source, pair)?;
+    Ok(declaration)
+}
+
+fn parse_declaration_with_base(
+    source: &str,
+    pair: Pair<'_, Rule>,
+) -> Result<(Declaration, Type), CompilerError> {
     let mut inner = pair.into_inner();
 
     let Some(specifier_pair) = inner.next() else {
-        return Ok(Declaration::default());
+        return Ok((Declaration::default(), Type::Builtin(BuiltinType::Int)));
     };
     let (storage_class, base_type) = parse_declaration_specifiers(specifier_pair)?;
 
@@ -156,10 +172,13 @@ fn parse_declaration(source: &str, pair: Pair<'_, Rule>) -> Result<Declaration, 
         }
     }
 
-    Ok(Declaration {
-        storage_class,
-        declarators,
-    })
+    Ok((
+        Declaration {
+            storage_class,
+            declarators,
+        },
+        base_type,
+    ))
 }
 
 /// Extracts storage class and base type from declaration specifiers.
@@ -188,11 +207,15 @@ fn parse_declaration_specifiers(
 }
 
 fn parse_storage_class_specifier(pair: Pair<'_, Rule>) -> Result<StorageClass, CompilerError> {
-    let inner = pair.into_inner().next();
-    if let Some(p) = inner
-        && p.as_rule() == Rule::kw_static
-    {
+    let Some(inner) = pair.into_inner().next() else {
+        return Err(CompilerError::parse("unknown storage class".to_string()));
+    };
+
+    if inner.as_rule() == Rule::kw_static {
         return Ok(StorageClass::Static);
+    }
+    if inner.as_rule() == Rule::kw_typedef {
+        return Ok(StorageClass::Typedef);
     }
     Err(CompilerError::parse("unknown storage class".to_string()))
 }
@@ -211,6 +234,9 @@ fn parse_type_specifier(pair: Pair<'_, Rule>) -> Result<Type, CompilerError> {
         Rule::kw_int => BuiltinType::Int,
         Rule::kw_char => BuiltinType::Char,
         Rule::kw_void => BuiltinType::Void,
+        Rule::typedef_type => {
+            return Ok(Type::Alias(inner.as_str().to_string()));
+        }
         _ => {
             return Err(CompilerError::parse(
                 "unsupported type specifier".to_string(),
@@ -1261,7 +1287,8 @@ fn map_multiplicative_operator(text: &str) -> Result<BinaryOp, CompilerError> {
 #[cfg(test)]
 mod tests {
     use crate::ast::{
-        BinaryOp, BlockItem, BuiltinType, Expression, ExternalDeclaration, Statement, Type, UnaryOp,
+        BinaryOp, BlockItem, BuiltinType, Expression, ExternalDeclaration, Statement, StorageClass,
+        Type, UnaryOp,
     };
 
     use super::CParser;
@@ -2070,13 +2097,20 @@ mod tests {
         };
 
         let ty = &declaration.declarators[0].ty;
-        assert!(matches!(ty, Type::Struct { name, fields } if name == "Point" && fields.len() == 2));
+        assert!(
+            matches!(ty, Type::Struct { name, fields } if name == "Point" && fields.len() == 2)
+        );
 
         let ExternalDeclaration::Function(function) = &unit.top_level_items[1] else {
             panic!("expected function declaration");
         };
 
-        let BlockItem::Statement(Statement::Return(Some(Expression::MemberAccess { member, through_pointer, .. }))) = &function.body.items[0] else {
+        let BlockItem::Statement(Statement::Return(Some(Expression::MemberAccess {
+            member,
+            through_pointer,
+            ..
+        }))) = &function.body.items[0]
+        else {
             panic!("expected member access");
         };
 
@@ -2094,11 +2128,84 @@ mod tests {
             panic!("expected function declaration");
         };
 
-        let BlockItem::Statement(Statement::Return(Some(Expression::MemberAccess { member, through_pointer, .. }))) = &function.body.items[2] else {
+        let BlockItem::Statement(Statement::Return(Some(Expression::MemberAccess {
+            member,
+            through_pointer,
+            ..
+        }))) = &function.body.items[2]
+        else {
             panic!("expected member access");
         };
 
         assert_eq!(member, "y");
         assert!(*through_pointer);
+    }
+
+    #[test]
+    fn parses_tag_only_struct_declaration() {
+        let unit = parse_unit("struct Point { int x; int y; };");
+        assert_eq!(unit.top_level_items.len(), 1);
+
+        let ExternalDeclaration::TypeDeclaration(ty) = &unit.top_level_items[0] else {
+            panic!("expected type declaration");
+        };
+
+        assert!(
+            matches!(ty, Type::Struct { name, fields } if name == "Point" && fields.len() == 2)
+        );
+    }
+
+    #[test]
+    fn parses_typedef_struct_alias_usage() {
+        let unit = parse_unit(
+            "typedef struct Point { int x; int y; } Point; Point p; int main(void) { return p.x; }",
+        );
+
+        let ExternalDeclaration::GlobalDeclaration(td) = &unit.top_level_items[0] else {
+            panic!("expected typedef declaration");
+        };
+        assert!(matches!(td.storage_class, Some(StorageClass::Typedef)));
+
+        let ExternalDeclaration::GlobalDeclaration(var) = &unit.top_level_items[1] else {
+            panic!("expected variable declaration");
+        };
+        assert!(matches!(var.declarators[0].ty, Type::Alias(ref name) if name == "Point"));
+    }
+
+    #[test]
+    fn parses_struct_tag_forward_reference() {
+        let unit = parse_unit("struct Point; struct Point { int x; }; struct Point p;");
+        assert_eq!(unit.top_level_items.len(), 3);
+    }
+
+    #[test]
+    fn parses_pointer_to_typedef_struct() {
+        let unit = parse_unit("typedef struct Point { int x; } Point; Point *p;");
+        let ExternalDeclaration::GlobalDeclaration(var) = &unit.top_level_items[1] else {
+            panic!("expected variable declaration");
+        };
+        assert!(matches!(var.declarators[0].ty, Type::Pointer(_)));
+    }
+
+    #[test]
+    fn parses_array_of_typedef_struct() {
+        let unit = parse_unit("typedef struct Point { int x; } Point; Point arr[3];");
+        let ExternalDeclaration::GlobalDeclaration(var) = &unit.top_level_items[1] else {
+            panic!("expected variable declaration");
+        };
+        assert!(matches!(var.declarators[0].ty, Type::Array { .. }));
+    }
+
+    #[test]
+    fn parses_struct_with_pointer_member() {
+        let unit = parse_unit("struct Node { int value; struct Node *next; } n;");
+        let ExternalDeclaration::GlobalDeclaration(var) = &unit.top_level_items[0] else {
+            panic!("expected global declaration");
+        };
+        let Type::Struct { fields, .. } = &var.declarators[0].ty else {
+            panic!("expected struct type");
+        };
+        assert_eq!(fields.len(), 2);
+        assert!(matches!(fields[1].ty, Type::Pointer(_)));
     }
 }

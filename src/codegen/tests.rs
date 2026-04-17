@@ -1258,3 +1258,52 @@ fn emits_struct_member_load_and_store() {
     assert!(output.contains("StoreI helper_addr"));
     assert!(output.contains("LoadI helper_addr"));
 }
+
+#[test]
+fn emits_struct_with_typedef_alias() {
+    let source =
+        "typedef struct Point { int x; int y; } Point; Point p; int main(void) { return p.x; }";
+    let unit = crate::parser::CParser::new()
+        .parse_translation_unit(source)
+        .expect("source should parse");
+
+    let output = MarieCodegen.emit(&unit).expect("codegen should succeed");
+    assert!(output.contains("g_p, ADR"));
+    assert!(output.contains("LoadI helper_addr"));
+}
+
+#[test]
+fn emits_struct_with_pointer_member() {
+    let source = "struct Node { int value; struct Node *next; } n; int main(void) { n.next = 0; return n.value; }";
+    let unit = crate::parser::CParser::new()
+        .parse_translation_unit(source)
+        .expect("source should parse");
+
+    let output = MarieCodegen.emit(&unit).expect("codegen should succeed");
+    assert!(output.contains("g_n, ADR"));
+    assert!(output.contains("LoadI helper_addr"));
+}
+
+#[test]
+fn emits_typedef_pointer_to_struct() {
+    let source =
+        "typedef struct Point { int x; int y; } Point; Point *p; int main(void) { return p->x; }";
+    let unit = crate::parser::CParser::new()
+        .parse_translation_unit(source)
+        .expect("source should parse");
+
+    let output = MarieCodegen.emit(&unit).expect("codegen should succeed");
+    assert!(output.contains("LoadI helper_addr"));
+}
+
+#[test]
+fn emits_typedef_array_of_struct() {
+    let source = "typedef struct Point { int x; } Point; Point arr[2]; int main(void) { arr[0].x = 1; return arr[1].x; }";
+    let unit = crate::parser::CParser::new()
+        .parse_translation_unit(source)
+        .expect("source should parse");
+
+    let output = MarieCodegen.emit(&unit).expect("codegen should succeed");
+    assert!(output.contains("StoreI helper_addr"));
+    assert!(output.contains("LoadI helper_addr"));
+}
