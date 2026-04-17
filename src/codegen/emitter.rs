@@ -24,6 +24,7 @@ pub(crate) struct MarieEmitter {
     has_one_const: bool,
     needs_mul_helper: bool,
     needs_mod_helper: bool,
+    needs_div_helper: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -476,7 +477,7 @@ impl MarieEmitter {
                     BinaryOp::LogicalOr => self.emit_logical_or(&lhs_temp, &rhs_temp),
                     BinaryOp::Multiply => self.emit_mul_call(&lhs_temp, &rhs_temp),
                     BinaryOp::Modulo => self.emit_mod_call(&lhs_temp, &rhs_temp),
-                    BinaryOp::Divide
+                    BinaryOp::Divide => self.emit_div_call(&lhs_temp, &rhs_temp),
                     | BinaryOp::ShiftLeft
                     | BinaryOp::ShiftRight
                     | BinaryOp::BitwiseAnd
@@ -635,7 +636,7 @@ impl MarieEmitter {
                 return;
             }
 
-            let first_field_label = format!("{}_field_0", label);
+            let first_field_label = format!("{}_field_0_{}", label, fields[0].name);
             self.data
                 .push(format!("{}, ADR {}", label, first_field_label));
 
@@ -1056,6 +1057,16 @@ impl MarieEmitter {
         self.instructions.push("Store helper_mod_rhs".to_string());
         self.instructions.push("JnS helper_mod".to_string());
         self.instructions.push("Load helper_mod_ret".to_string());
+    }
+
+    fn emit_div_call(&mut self, lhs_temp: &str, rhs_temp: &str) {
+        self.needs_div_helper = true;
+        self.instructions.push(format!("Load {}", lhs_temp));
+        self.instructions.push("Store helper_div_dividend".to_string());
+        self.instructions.push(format!("Load {}", rhs_temp));
+        self.instructions.push("Store helper_div_rhs".to_string());
+        self.instructions.push("JnS helper_div".to_string());
+        self.instructions.push("Load helper_div_ret".to_string());
     }
 
     fn emit_compare_equal(&mut self, lhs_temp: &str, rhs_temp: &str) {
@@ -1480,6 +1491,9 @@ impl MarieEmitter {
         if self.needs_mod_helper {
             self.emit_mod_helper();
         }
+        if self.needs_div_helper {
+            self.emit_div_helper();
+        }
     }
 
     fn emit_mul_helper(&mut self) {
@@ -1566,6 +1580,63 @@ impl MarieEmitter {
             self.data.push("helper_mod_rhs, DEC 0".to_string());
             self.data.push("helper_mod_work, DEC 0".to_string());
             self.data.push("helper_mod_ret, DEC 0".to_string());
+        }
+    }
+
+    fn emit_div_helper(&mut self) {
+        self.ensure_zero_const();
+        self.ensure_one_const();
+
+        if self
+            .instructions
+            .iter()
+            .any(|line| line.starts_with("helper_div,"))
+        {
+            return;
+        }
+
+        self.instructions.push("helper_div, HEX 000".to_string());
+        self.instructions.push("helper_div_body, Clear".to_string());
+        self.instructions
+            .push("Store helper_div_quotient".to_string());
+        self.instructions
+            .push("helper_div_loop, Load helper_div_rhs".to_string());
+        self.instructions.push("Skipcond 400".to_string());
+        self.instructions.push("Jump helper_div_check".to_string());
+        self.instructions.push("Jump helper_div_done".to_string());
+        self.instructions
+            .push("helper_div_check, Load helper_div_dividend".to_string());
+        self.instructions.push("Subt helper_div_rhs".to_string());
+        self.instructions.push("Skipcond 000".to_string());
+        self.instructions
+            .push("Jump helper_div_continue".to_string());
+        self.instructions.push("Jump helper_div_done".to_string());
+        self.instructions
+            .push("helper_div_continue, Load helper_div_dividend".to_string());
+        self.instructions.push("Subt helper_div_rhs".to_string());
+        self.instructions.push("Store helper_div_dividend".to_string());
+        self.instructions
+            .push("Load helper_div_quotient".to_string());
+        self.instructions.push("Add const_one".to_string());
+        self.instructions
+            .push("Store helper_div_quotient".to_string());
+        self.instructions.push("Jump helper_div_loop".to_string());
+        self.instructions
+            .push("helper_div_done, Load helper_div_quotient".to_string());
+        self.instructions.push("Store helper_div_ret".to_string());
+        self.instructions.push("JumpI helper_div".to_string());
+
+        if !self
+            .data
+            .iter()
+            .any(|line| line.starts_with("helper_div_dividend,"))
+        {
+            self.data
+                .push("helper_div_dividend, DEC 0".to_string());
+            self.data.push("helper_div_rhs, DEC 0".to_string());
+            self.data
+                .push("helper_div_quotient, DEC 0".to_string());
+            self.data.push("helper_div_ret, DEC 0".to_string());
         }
     }
 

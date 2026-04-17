@@ -529,7 +529,7 @@ fn analyze_expression(
             let right = analyze_expression(context, rhs, info)?;
             use crate::ast::BinaryOp;
             match op {
-                BinaryOp::Multiply | BinaryOp::Modulo => {
+                BinaryOp::Multiply | BinaryOp::Modulo | BinaryOp::Divide => {
                     if !is_integer_like(&left.ty)
                         || !is_integer_like(&right.ty)
                         || left.ty != right.ty
@@ -545,12 +545,14 @@ fn analyze_expression(
                     })
                 }
                 BinaryOp::Add => {
-                    if is_integer_like(&left.ty)
-                        && is_integer_like(&right.ty)
-                        && left.ty == right.ty
-                    {
+                    if is_integer_like(&left.ty) && is_integer_like(&right.ty) {
+                        let result_ty = if is_enum_like(&left.ty) {
+                            Type::Builtin(BuiltinType::Int)
+                        } else {
+                            left.ty.clone()
+                        };
                         return Ok(ExprInfo {
-                            ty: left.ty,
+                            ty: result_ty,
                             is_lvalue: false,
                         });
                     }
@@ -568,12 +570,14 @@ fn analyze_expression(
                     ))
                 }
                 BinaryOp::Subtract => {
-                    if is_integer_like(&left.ty)
-                        && is_integer_like(&right.ty)
-                        && left.ty == right.ty
-                    {
+                    if is_integer_like(&left.ty) && is_integer_like(&right.ty) {
+                        let result_ty = if is_enum_like(&left.ty) {
+                            Type::Builtin(BuiltinType::Int)
+                        } else {
+                            left.ty.clone()
+                        };
                         return Ok(ExprInfo {
-                            ty: left.ty,
+                            ty: result_ty,
                             is_lvalue: false,
                         });
                     }
@@ -1185,6 +1189,10 @@ fn is_struct_like(ty: &Type) -> bool {
     matches!(ty, Type::Struct { .. })
 }
 
+fn is_enum_like(ty: &Type) -> bool {
+    matches!(ty, Type::Enum { .. })
+}
+
 /// Returns result type for pointer addition if operands are compatible.
 fn pointer_add_result_type(left: &Type, right: &Type) -> Option<Type> {
     if matches!(left, Type::Pointer(_)) && is_integer_like(right) {
@@ -1644,6 +1652,11 @@ mod tests {
     #[test]
     fn rejects_modulo_with_pointer_operand() {
         assert_semantic_fails("int main(void) { int *p; return p % 2; }");
+    }
+
+    #[test]
+    fn rejects_division_with_pointer_operand() {
+        assert_semantic_fails("int main(void) { int *p; return p / 2; }");
     }
 
     /// Verifies assignment rejects incompatible pointer and integer values.

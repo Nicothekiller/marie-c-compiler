@@ -54,7 +54,6 @@ impl Codegen for MarieCodegen {
 impl TargetValidation for MarieCodegen {
     fn unsupported_binary_ops(&self) -> &'static [BinaryOp] {
         &[
-            BinaryOp::Divide,
             BinaryOp::ShiftLeft,
             BinaryOp::ShiftRight,
             BinaryOp::BitwiseAnd,

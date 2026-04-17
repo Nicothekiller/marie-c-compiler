@@ -276,6 +276,47 @@ fn emits_mul_mod_and_index_paths() {
 }
 
 #[test]
+fn emits_division_helper() {
+    let unit = TranslationUnit {
+        top_level_items: vec![ExternalDeclaration::Function(FunctionDeclaration {
+            name: "main".to_string(),
+            return_type: Type::Builtin(BuiltinType::Int),
+            params: vec![Parameter {
+                name: None,
+                ty: Type::Builtin(BuiltinType::Void),
+                location: None,
+            }],
+            body: Block {
+                items: vec![BlockItem::Statement(Statement::Return(Some(
+                    Expression::Binary {
+                        op: crate::ast::BinaryOp::Divide,
+                        lhs: Box::new(Expression::IntegerLiteral {
+                            value: 10,
+                            location: None,
+                        }),
+                        rhs: Box::new(Expression::IntegerLiteral {
+                            value: 3,
+                            location: None,
+                        }),
+                        location: None,
+                    },
+                )))],
+            },
+        })],
+    };
+
+    let output = MarieCodegen
+        .emit(&unit)
+        .expect("codegen should emit division helper");
+
+    assert!(output.contains("JnS helper_div"));
+    assert!(output.contains("helper_div, HEX 000"));
+    assert!(output.contains("helper_div_dividend"));
+    assert!(output.contains("helper_div_rhs"));
+    assert!(output.contains("helper_div_quotient"));
+}
+
+#[test]
 fn emits_int_and_addr_constants_and_array_storage() {
     let unit = TranslationUnit {
         top_level_items: vec![
@@ -1329,4 +1370,26 @@ fn emits_typedef_enum_alias_program() {
 
     let output = MarieCodegen.emit(&unit).expect("codegen should succeed");
     assert!(output.contains("g_c, DEC 0"));
+}
+
+#[test]
+fn emits_enum_with_variable_and_constant() {
+    let source = "enum Color { RED, GREEN = 3 }; int main(void) { enum Color c; c = GREEN; return c + RED; }";
+    let unit = crate::parser::CParser::new()
+        .parse_translation_unit(source)
+        .expect("source should parse");
+
+    let output = MarieCodegen.emit(&unit).expect("codegen should succeed");
+    assert!(output.contains("const_int_3"));
+}
+
+#[test]
+fn emits_division_with_variables() {
+    let source = "int main(void) { int x = 10 / 3; return x / 2; }";
+    let unit = crate::parser::CParser::new()
+        .parse_translation_unit(source)
+        .expect("source should parse");
+
+    let output = MarieCodegen.emit(&unit).expect("codegen should succeed");
+    assert!(output.contains("helper_div"));
 }
