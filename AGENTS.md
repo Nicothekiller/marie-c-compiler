@@ -19,7 +19,7 @@ Scope: entire repository unless overridden by nested `AGENTS.md` files.
 - `src/compiler.rs`: pipeline coordinator
 - `src/codegen.rs`: Marie output emitter
 - `src/error.rs`: shared compiler error types
- - `docs/roadmap.md`: compiler feature roadmap
+- `docs/roadmap.md`: compiler feature roadmap
 
 ## High-Level Pipeline
 - Parse source text into parse tree
@@ -52,17 +52,14 @@ Scope: entire repository unless overridden by nested `AGENTS.md` files.
 ## Parser Guidelines (Pest)
 - Grammar should reflect reduced C subset, not full ANSI C
 - Keep operator precedence explicit in grammar rules
- - Reserve unsupported features for 0.2.0 diagnostics
 - Prefer deterministic grammar over overly clever rules
 - Keep keyword matching safe against identifier collisions
 - Maintain whitespace and comment handling rules
 
 ## AST Guidelines
 - Model language features with explicit node variants
- - Keep AST aligned with current language scope in `docs/roadmap.md`
 - Separate declarations, statements, and expressions cleanly
 - Encode operators as enums instead of raw strings
- - Preserve room for 0.2.0/0.3.0 expansion without breaking names
 
 ## Codegen Guidelines
 - Output target extension: `.mas`
@@ -70,12 +67,18 @@ Scope: entire repository unless overridden by nested `AGENTS.md` files.
 - Keep placeholder behavior simple until lowering is complete
 - Keep backend interfaces independent from CLI concerns
 
+## Implemented Features
+- Types: `int`, `char`, `void`, pointers, fixed-size arrays, structs, enums, typedefs
+- Declarations: globals, locals, functions.
+- Statements: compound, expression, if/else, for, while, return, inline asm
+- Expressions: identifiers, integers, unary ops, binary ops (+, -, *, /, %), assignment, function calls, array indexing, member access (`.` and `->`), prefix/postfix increment/decrement (++, --)
+- Pointer arithmetic: pointer+int, int+pointer, pointer-int, pointer-pointer
+
 ## Unsupported/Deferred Features
-- `static` variables are forbidden by target constraints
-- Division `/` is excluded from current subset
-- Bitwise/shift operators are excluded for now
-- `goto` is deferred and may remain optional
- - Inline asm is planned as a 0.3.0 statement-level extension
+- `static` variables (forbidden by Marie target)
+- Bitwise operators (`&`, `|`, `^`, `<<`, `>>`)
+- `goto` and labels
+- Preprocessor (input assumed preprocessed)
 
 ## CLI Guidelines
 - Use `clap` for argument parsing
@@ -112,6 +115,6 @@ Scope: entire repository unless overridden by nested `AGENTS.md` files.
 ## Quick Validation Checklist
 - Project compiles (`cargo check`)
 - Tests pass (`cargo test`)
-- Grammar changes don’t break parser smoke tests
+- Grammar changes don't break parser smoke tests
 - AST changes preserve existing tests
 - CLI still emits `.mas` output by default
